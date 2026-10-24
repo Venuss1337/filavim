@@ -55,3 +55,18 @@ license is retained in [LICENSES/neovide-MIT.txt](LICENSES/neovide-MIT.txt).
 Filavim adds bounded emission/storage, stratified interpolation, exact curl
 integration, jump/stall cancellation, sprite-atlas rendering and terminal
 capability validation. No Skia/GUI dependency is used.
+
+## Native checkpoint assets and framework
+
+The GPUI frontend uses the official `gpui` 0.2.2 crate under Apache-2.0;
+its license is retained in `LICENSES/GPUI-Apache-2.0.txt`. Cargo dependencies
+retain their respective copyright/license terms.
+
+The bundled, unmodified Agave Nerd Font Mono regular face is redistributable
+under SIL OFL 1.1. Font copyright, license, Nerd Fonts notices, source revision
+and SHA-256 are retained in `assets/fonts/`. This font is embedded only for
+application text rendering, with no system installation. Its font license
+remains distinct from the application's GPL-3.0-only license.
+
+Historical smear/Neovide notices above apply to their retained source files;
+those modules are not compiled into the native Checkpoint 1 application.

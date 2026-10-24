@@ -294,11 +294,11 @@ impl Buffer {
             new_end_position: point(start),
         };
         let ranges = [
-            crate::lsp::Encoding::Utf8,
-            crate::lsp::Encoding::Utf16,
-            crate::lsp::Encoding::Utf32,
+            crate::coordinates::Encoding::Utf8,
+            crate::coordinates::Encoding::Utf16,
+            crate::coordinates::Encoding::Utf32,
         ]
-        .map(|encoding| crate::lsp::selection_range(&self.text, range.clone(), encoding));
+        .map(|encoding| crate::coordinates::selection_range(&self.text, range.clone(), encoding));
         self.last_change = Some((start, range.end, start + text.chars().count()));
         self.text.remove(range);
         self.text.insert(start, text);
@@ -323,18 +323,6 @@ impl Buffer {
         }
         // Joining text can form a new combining cluster across the insertion boundary.
         self.snap_cursor();
-        #[cfg(feature = "perf")]
-        crate::perf::trace(
-            "edit_applied",
-            format!(
-                "{}@{}",
-                self.path
-                    .as_deref()
-                    .map(crate::lsp::path_key)
-                    .unwrap_or_default(),
-                self.revision
-            ),
-        );
     }
     pub fn insert(&mut self, text: &str) {
         self.replace(self.cursor..self.cursor, text);

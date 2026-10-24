@@ -81,8 +81,7 @@ impl Editor {
             command: String::new(),
             searching: false,
             last_search: String::new(),
-            message: "Welcome to Filavim.  Press I to create, :e <path> to open, F1 for help."
-                .into(),
+            message: "W/A/S/D move · I insert · Ctrl-O open · Ctrl-S save · F1 help.".into(),
             error: false,
             top: 0,
             left: 0,
@@ -148,7 +147,7 @@ impl Editor {
             Mode::Command => self
                 .command
                 .extend(text.chars().filter(|c| !c.is_control())),
-            _ => self.notify("Enter Insert mode (I) to paste terminal text.", false),
+            _ => self.notify("Enter Insert mode (I) to paste text.", false),
         }
     }
     pub fn act(&mut self, action: Action) -> Option<Request> {
@@ -297,10 +296,7 @@ impl Editor {
                     }
                 }
                 self.set_mode(Mode::Normal);
-                self.notify(
-                    "Copied to register and terminal clipboard (when supported).",
-                    false,
-                );
+                self.notify("Copied to register and clipboard.", false);
                 return Some(Request::Clipboard(self.register.clone()));
             }
             Paste => {
@@ -376,7 +372,7 @@ impl Editor {
             revision: self.buffer.revision,
         })
     }
-    fn save(&mut self, path: Option<PathBuf>, quit: bool) -> Option<Request> {
+    pub fn save(&mut self, path: Option<PathBuf>, quit: bool) -> Option<Request> {
         match path.or_else(|| self.buffer.path.clone()) {
             Some(path) => {
                 self.notify("Saving…", false);

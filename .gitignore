@@ -1,3 +1,4 @@
 /target
 *.filavim-tmp
 /.local/
+*.log

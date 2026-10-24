@@ -1,4 +1,4 @@
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use filavim::key::{KeyCode, KeyEvent, KeyModifiers};
 use filavim::{
     buffer::{Buffer, display_width},
     config::{Config, Preset},

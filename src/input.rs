@@ -1,7 +1,7 @@
 //! Central mode-aware keymap. The engine only receives semantic actions.
+use crate::key::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crate::{config::Config, editor::Mode};
 use anyhow::{Result, bail};
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::collections::HashMap;
 
 /// Windows console Alt-code input may arrive only as a character release.

@@ -1,72 +1,39 @@
-use anyhow::{Context, Result};
-use crossterm::{
-    cursor::{SetCursorStyle, Show},
-    event::{DisableBracketedPaste, EnableBracketedPaste},
-    execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
-};
-use filavim::{
-    cli::{self, Cli, Launch},
-    config::Config,
-    input::Keymap,
-    runtime,
-    storage::History,
-    theme::Theme,
-};
-use ratatui::{Terminal, backend::CrosstermBackend};
-use std::io;
-
-fn restore() {
-    let _ = filavim::pixiedust::graphics::cleanup_owned(&mut io::stdout());
-    let _ = disable_raw_mode();
-    let _ = execute!(
-        io::stdout(),
-        SetCursorStyle::DefaultUserShape,
-        Show,
-        DisableBracketedPaste,
-        LeaveAlternateScreen
-    );
-}
-struct TerminalGuard;
-impl Drop for TerminalGuard {
-    fn drop(&mut self) {
-        restore();
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+fn main() -> anyhow::Result<()> {
+    let mut args = std::env::args_os().skip(1).peekable();
+    if args.peek().is_some_and(|a| a == "--smoke-test") {
+        args.next();
+        let report = args
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("--smoke-test REPORT FILE"))?;
+        let path = args
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("--smoke-test REPORT FILE"))?;
+        return filavim::gui::smoke(path.into(), report.into());
     }
-}
-fn main() -> Result<()> {
-    let paths = match Cli::parse(std::env::args_os().skip(1))? {
-        Cli::Help => {
+    let mut path = None;
+    let mut positional = false;
+    for arg in args {
+        if !positional && arg == "--" {
+            positional = true;
+            continue;
+        }
+        if !positional && (arg == "--version" || arg == "-V") {
+            println!("filavim-gpui 0.4.0");
+            return Ok(());
+        }
+        if !positional && (arg == "--help" || arg == "-h") {
             println!(
-                "{}\n\nConfiguration: {}\nHistory: {}",
-                cli::HELP,
-                Config::path().display(),
-                History::path().display()
+                "Filavim GPUI\nUsage: filavim [FILE]\nCtrl-O opens a file. Ctrl-S saves. :e/:w/:q use existing commands."
             );
             return Ok(());
         }
-        Cli::Version => {
-            println!("{}", cli::version());
-            return Ok(());
+        if !positional && arg.to_string_lossy().starts_with('-') {
+            anyhow::bail!("Unknown option: {}", arg.to_string_lossy());
         }
-        Cli::Open(paths) => paths,
-    };
-    let launch = Launch::resolve(
-        &std::env::current_dir().context("Cannot determine launch directory")?,
-        &paths,
-    )?;
-    let config = Config::load()?;
-    let theme = Theme::from_config(&config)?.for_terminal(config.visual.colors);
-    let keymap = Keymap::new(&config)?;
-    let app = launch.into_app(config, History::load(), History::path())?;
-    let previous = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        restore();
-        previous(info);
-    }));
-    enable_raw_mode().context("Filavim requires an interactive terminal")?;
-    let _guard = TerminalGuard;
-    execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste)?;
-    let output = io::BufWriter::with_capacity(64 * 1024, io::stdout());
-    let mut terminal = Terminal::new(CrosstermBackend::new(output))?;
-    runtime::run(&mut terminal, app, keymap, theme)
+        if path.replace(std::path::PathBuf::from(arg)).is_some() {
+            anyhow::bail!("Checkpoint 1 opens one file at a time");
+        }
+    }
+    filavim::gui::run(path, filavim::config::Config::load()?)
 }

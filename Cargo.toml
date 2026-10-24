@@ -1,0 +1,48 @@
+[package]
+name = "filavim"
+version = "0.3.0"
+edition = "2024"
+license = "GPL-3.0-only"
+exclude = [".local/**"]
+
+[features]
+perf = []
+dev-operator-font = []
+
+[dependencies]
+anyhow = "1"
+crossterm = "0.29"
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
+ropey = "1.6"
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+tree-sitter = "0.26"
+tree-sitter-rust = "0.24"
+tree-sitter-python = "0.25"
+tree-sitter-javascript = "0.25"
+tree-sitter-json = "0.24"
+unicode-segmentation = "1.12"
+unicode-width = "0.2"
+tempfile = "3"
+base64 = "0.22"
+nucleo = "0.5"
+ignore = "0.4"
+grep-searcher = "0.1"
+grep-regex = "0.1"
+grep-matcher = "0.1"
+serde_json = "1"
+lsp-types = "0.97"
+url = "2"
+portable-pty = "0.9"
+vt100 = "0.18"
+similar = "2"
+ttf-parser = { version = "0.25", default-features = false, features = ["std"] }
+sha2 = "0.10"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_Media", "Win32_System_Registry", "Win32_Security", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

@@ -182,16 +182,27 @@ impl CursorView {
                     && corners[3].x == corners[0].x
                 {
                     // Static and axis-aligned movement use the allocation-free quad path.
-                    window.paint_quad(fill(
-                        Bounds::new(
-                            point(px(corners[0].x), px(corners[0].y)),
-                            size(
-                                px(corners[1].x - corners[0].x),
-                                px(corners[3].y - corners[0].y),
-                            ),
+                    let bounds = Bounds::new(
+                        point(px(corners[0].x), px(corners[0].y)),
+                        size(
+                            px(corners[1].x - corners[0].x),
+                            px(corners[3].y - corners[0].y),
                         ),
-                        color,
-                    ));
+                    );
+                    let radius = Corners::all(px(if bounds.size.width > px(3.) { 2. } else { 1. }));
+                    // Bloom: the caret is a small light in the mode color. One
+                    // blurred primitive, drawn only on this entity's frames.
+                    window.paint_shadows(
+                        bounds,
+                        radius,
+                        &[BoxShadow {
+                            color: self.color.opacity(0.42),
+                            offset: point(px(0.), px(0.)),
+                            blur_radius: px(10.),
+                            spread_radius: px(0.),
+                        }],
+                    );
+                    window.paint_quad(fill(bounds, color).corner_radii(radius));
                 } else {
                     // GPUI's public convex path is two triangles, with no general tessellator.
                     let mut path = Path::new(point(px(corners[0].x), px(corners[0].y)));

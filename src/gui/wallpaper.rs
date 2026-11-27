@@ -1,10 +1,6 @@
-//! Native wallpaper: one bounded background decode and one reusable GPUI image ID.
-use super::theme::Theme;
-use crate::{
-    appearance::{BackgroundConfig, Fit},
-    config::Config,
-};
-use gpui::{prelude::*, *};
+//! Bounded wallpaper decoding into one reusable GPUI image. The stage
+//! ([`super::stage`]) owns loading, presentation and the frosted material.
+use gpui::RenderImage;
 use std::{
     io::{Cursor, Read},
     path::Path,
@@ -54,136 +50,10 @@ pub fn decode(path: &Path) -> anyhow::Result<Arc<RenderImage>> {
     }
     Ok(Arc::new(RenderImage::new(vec![image::Frame::new(rgba)])))
 }
-#[derive(Clone)]
-pub struct WallpaperError(pub String);
-pub struct Wallpaper {
-    settings: Option<BackgroundConfig>,
-    theme: Theme,
-    image: Option<Arc<RenderImage>>,
-    task: Option<Task<()>>,
-    generation: u64,
-}
-impl EventEmitter<WallpaperError> for Wallpaper {}
-impl Wallpaper {
-    pub fn new(config: &Config, theme: Theme, cx: &mut Context<Self>) -> Self {
-        cx.on_release(|this, cx| {
-            if let Some(image) = this.image.take() {
-                cx.drop_image(image, None);
-            }
-        })
-        .detach();
-        let mut this = Self {
-            settings: None,
-            theme,
-            image: None,
-            task: None,
-            generation: 0,
-        };
-        this.configure(config, theme, false, cx);
-        this
-    }
-    pub fn configure(
-        &mut self,
-        config: &Config,
-        theme: Theme,
-        force: bool,
-        cx: &mut Context<Self>,
-    ) {
-        let next = &config.background;
-        let reload = force
-            || self
-                .settings
-                .as_ref()
-                .is_none_or(|old| old.enabled != next.enabled || old.image != next.image);
-        self.theme = theme;
-        self.settings = Some(next.clone());
-        if !reload {
-            cx.notify();
-            return;
-        }
-        self.generation = self.generation.wrapping_add(1);
-        let generation = self.generation;
-        self.task = None;
-        if let Some(old) = self.image.take() {
-            cx.drop_image(old, None);
-        }
-        if !next.enabled {
-            cx.notify();
-            return;
-        }
-        let Some(path) = next.image.clone().filter(|p| !p.as_os_str().is_empty()) else {
-            cx.notify();
-            return;
-        };
-        // Relative wallpapers are anchored to the configuration directory, not a changing project.
-        let path = if path.is_absolute() {
-            path
-        } else {
-            Config::path().parent().unwrap_or(Path::new(".")).join(path)
-        };
-        let decode = cx.background_executor().spawn(async move { decode(&path) });
-        self.task = Some(cx.spawn(async move |view, cx| {
-            let result = decode.await;
-            let _ = view.update(cx, |view, cx| {
-                if view.generation != generation {
-                    return;
-                }
-                match result {
-                    Ok(image) => view.image = Some(image),
-                    Err(error) => {
-                        cx.emit(WallpaperError(format!("Wallpaper unavailable: {error:#}")))
-                    }
-                }
-                view.task = None;
-                cx.notify();
-            });
-        }));
-        cx.notify();
-    }
-}
-impl Render for Wallpaper {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        let settings = self.settings.as_ref().cloned().unwrap_or_default();
-        let fit = match settings.fit {
-            Fit::Cover => ObjectFit::Cover,
-            Fit::Contain => ObjectFit::Contain,
-            Fit::Stretch => ObjectFit::Fill,
-        };
-        div()
-            .size_full()
-            .relative()
-            .overflow_hidden()
-            .bg(self.theme.base)
-            .when_some(self.image.clone(), |d, image| {
-                d.child(
-                    img(image)
-                        .size_full()
-                        .object_fit(fit)
-                        .opacity(settings.opacity),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .size_full()
-                        .top(px(0.))
-                        .left(px(0.))
-                        .bg(self.theme.base.opacity(settings.overlay_opacity)),
-                )
-            })
-            .child(
-                div()
-                    .absolute()
-                    .size_full()
-                    .top(px(0.))
-                    .left(px(0.))
-                    .bg(self.theme.editor),
-            )
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::{Bounds, DevicePixels, ObjectFit, point, px, size};
     use std::prelude::v1::test;
     #[test]
     fn image_formats_are_decoded_once_to_bgra_and_invalid_files_fail() {

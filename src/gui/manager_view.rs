@@ -1265,20 +1265,33 @@ impl EditorView {
             .cloned()
             .collect::<Vec<_>>();
         let message = format!("Language tools unavailable: {}", ids.join(", "));
-        Some(
-            div()
-                .flex()
-                .flex_none()
-                .items_center()
-                .gap(px(space::MD))
-                .h(px(scale.status_bar()))
-                .px(px(space::LG))
-                .bg(theme.warning.opacity(0.08))
-                .border_t_1()
-                .border_color(theme.warning.opacity(0.35))
-                .text_size(px(scale.small))
-                .text_color(theme.text)
-                .child(design::icon(icons::PACKAGE, scale.small, theme.warning))
+        let height = scale.control() + space::MD + 2.;
+        // A floating capsule at the foot of the editor: present, never in the way
+        // of the document's layout.
+        let capsule = design::capsule(&theme, design::Elevation::Floating, height / 2.)
+            .flex()
+            .items_center()
+            .gap(px(space::MD))
+            .h(px(height))
+            .max_w(px(760.))
+            .pl(px(space::XS))
+            .pr(px(space::XS))
+            .text_size(px(scale.small))
+            .text_color(theme.text)
+            .occlude()
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(px(height - space::MD))
+                    .rounded(px((height - space::MD) / 2.))
+                    .bg(theme.warning.opacity(0.14))
+                    .border_1()
+                    .border_color(theme.warning.opacity(0.35))
+                    .child(design::icon(icons::PACKAGE, scale.small, theme.warning)),
+            )
                 .child(
                     div()
                         .flex_1()
@@ -1298,7 +1311,6 @@ impl EditorView {
                         true,
                         false,
                     )
-                    .h(px(scale.status_bar() - space::MD))
                     .on_click(cx.listener(|v, _, _, cx| v.open_manager(cx))),
                 )
                 .child(
@@ -1311,7 +1323,6 @@ impl EditorView {
                         true,
                         false,
                     )
-                    .h(px(scale.status_bar() - space::MD))
                     .on_click(cx.listener(move |v, _, _, cx| {
                         for id in &ids {
                             v.services.manager.snapshot.missing.remove(id);
@@ -1322,7 +1333,16 @@ impl EditorView {
                         });
                         cx.notify();
                     })),
-                )
+                );
+        Some(
+            div()
+                .absolute()
+                .bottom(px(space::XL))
+                .left(px(space::XL))
+                .right(px(space::XL))
+                .flex()
+                .justify_center()
+                .child(capsule)
                 .into_any_element(),
         )
     }

@@ -123,6 +123,99 @@ impl Cyber {
         }
     }
 }
+/// FilaVim's own palette, designed for luminous glass over a world image.
+///
+/// Ink is cool white at four emphasis levels so it adapts to whatever the glass
+/// shows. Syntax hues are pastel and evenly bright, so no token class shouts;
+/// `ice` is the single interface signal, and `amber`/`coral` are reserved for
+/// warnings and errors. `night` and `glass_*` are the world and slab tints.
+#[derive(Clone, Copy, Debug)]
+pub struct Lucent {
+    pub night: u32,
+    pub glass_top: u32,
+    pub glass_bottom: u32,
+    pub ink: u32,
+    pub ink2: u32,
+    pub ink3: u32,
+    pub ink4: u32,
+    pub ice: u32,
+    pub mint: u32,
+    pub aqua: u32,
+    pub lilac: u32,
+    pub orchid: u32,
+    pub peach: u32,
+    pub gold: u32,
+    pub rose: u32,
+    pub sage: u32,
+    pub amber: u32,
+    pub coral: u32,
+    pub slate: u32,
+}
+impl Lucent {
+    pub const DARK: Self = Self {
+        night: 0x080c14,
+        glass_top: 0x222b3a,
+        glass_bottom: 0x0d1119,
+        ink: 0xf1f4f9,
+        ink2: 0xb6c1d1,
+        ink3: 0x7b889c,
+        ink4: 0x4d586a,
+        ice: 0x7db4f4,
+        mint: 0x72dcae,
+        aqua: 0x79dcd6,
+        lilac: 0xb9a4f6,
+        orchid: 0xe3a3ee,
+        peach: 0xf3b98d,
+        gold: 0xe9c87e,
+        rose: 0xf494aa,
+        sage: 0xa9dc9c,
+        amber: 0xf5b84a,
+        coral: 0xf2735f,
+        slate: 0x95a4ba,
+    };
+    pub const LIGHT: Self = Self {
+        night: 0xdfe5ee,
+        glass_top: 0xfdfeff,
+        glass_bottom: 0xeef2f8,
+        ink: 0x161d29,
+        ink2: 0x3f4a5c,
+        ink3: 0x6b7689,
+        ink4: 0x9fa8b7,
+        ice: 0x2766c4,
+        mint: 0x11845a,
+        aqua: 0x0b7f86,
+        lilac: 0x6248c9,
+        orchid: 0x9535a8,
+        peach: 0xae5a20,
+        gold: 0x8a6400,
+        rose: 0xbf345a,
+        sage: 0x3b7f2c,
+        amber: 0xa76800,
+        coral: 0xc53d2b,
+        slate: 0x5b6880,
+    };
+    /// Muted keeps the dark glass with calmer hues.
+    pub const MUTED: Self = Self {
+        ice: 0x8aaed8,
+        mint: 0x86c8a9,
+        aqua: 0x8cc8c5,
+        lilac: 0xaea2d8,
+        orchid: 0xc9a6d0,
+        peach: 0xd9b394,
+        gold: 0xd2bd8c,
+        rose: 0xd89eac,
+        sage: 0xa7c79f,
+        ..Self::DARK
+    };
+    pub fn variant(variant: crate::appearance::Variant) -> Self {
+        match variant {
+            crate::appearance::Variant::Dark => Self::DARK,
+            crate::appearance::Variant::Muted => Self::MUTED,
+            crate::appearance::Variant::Light => Self::LIGHT,
+        }
+    }
+}
+
 /// Cyberdream util.blend: weight belongs to the first color; channels floor.
 pub fn blend(first: u32, second: u32, weight: f32) -> u32 {
     [16, 8, 0].into_iter().fold(0, |rgb, shift| {

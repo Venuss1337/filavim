@@ -11,6 +11,8 @@ mod integration_tests;
 mod manager_ui;
 #[path = "search_refresh.rs"]
 mod search_refresh;
+#[path = "shell_view.rs"]
+mod shell_view;
 use super::{
     FONT_FAMILY,
     design::{self, Tone, space},
@@ -48,6 +50,18 @@ struct Confirmation {
     revision: u64,
     selected: usize,
 }
+/// Indent levels for the visible rows (see `EditorView::indent_guides`).
+struct Guides {
+    unit: usize,
+    rows: Vec<(usize, Option<usize>)>,
+}
+impl<'a> IntoIterator for &'a Guides {
+    type Item = &'a (usize, Option<usize>);
+    type IntoIter = std::slice::Iter<'a, (usize, Option<usize>)>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.rows.iter()
+    }
+}
 const GUTTER: f32 = 68.0;
 const PADDING: f32 = 12.0;
 #[derive(Clone)]
@@ -67,7 +81,6 @@ struct Cache {
     columns: usize,
     rows: usize,
     lines: Vec<Row>,
-    end_marker: ShapedLine,
     search: String,
 }
 /// The cursor row's number, tinted with the mode color. Shaped once per row/mode
@@ -94,7 +107,13 @@ pub struct EditorView {
     pub(super) toasts: Entity<super::toast_view::ToastView>,
     focus: FocusHandle,
     theme: Theme,
-    wallpaper: Entity<super::wallpaper::Wallpaper>,
+    pub(super) stage: Entity<super::stage::Stage>,
+    /// Presentation motion owned by the shell (tab lens, command lens). Frames
+    /// are requested only while one of these is moving.
+    clock: super::motion::Clock,
+    tab_lens: (super::motion::Motion, super::motion::Motion),
+    tab_lens_ready: bool,
+    command_presence: super::motion::Motion,
     bounds: Option<Bounds<Pixels>>,
     cell: Pixels,
     gutter: f32,
@@ -151,11 +170,10 @@ impl EditorView {
     pub fn new(model: Model, cx: &mut Context<Self>) -> Self {
         let theme = Theme::new(&model.editor.config);
         let toasts = cx.new(|_| super::toast_view::ToastView::new(&model.editor.config));
-        let wallpaper =
-            cx.new(|cx| super::wallpaper::Wallpaper::new(&model.editor.config, theme, cx));
+        let stage = cx.new(|cx| super::stage::Stage::new(&model.editor.config, theme, cx));
         cx.subscribe(
-            &wallpaper,
-            |view, _, error: &super::wallpaper::WallpaperError, cx| {
+            &stage,
+            |view, _, error: &super::stage::WallpaperError, cx| {
                 view.toast(super::toast::Category::Error, "Wallpaper", &error.0, cx);
             },
         )
@@ -215,7 +233,14 @@ impl EditorView {
             explorer_scroll: UniformListScrollHandle::new(),
             model: super::documents::Documents::new(model),
             theme,
-            wallpaper,
+            stage,
+            clock: Default::default(),
+            tab_lens: (
+                super::motion::Motion::new(0., super::motion::Character::Glide),
+                super::motion::Motion::new(0., super::motion::Character::Glide),
+            ),
+            tab_lens_ready: false,
+            command_presence: super::motion::Motion::new(0., super::motion::Character::Glide),
             focus,
             bounds: None,
             cell: px(10.),
@@ -1568,8 +1593,8 @@ impl EditorView {
                         if appearance {
                             v.cache = None;
                             v.command_line = None;
-                            v.wallpaper.update(cx, |wallpaper, cx| {
-                                wallpaper.configure(&config, v.theme, false, cx)
+                            v.stage.update(cx, |stage, cx| {
+                                stage.configure(&config, v.theme, false, cx)
                             });
                         }
                         if !visual_only {
@@ -1879,8 +1904,8 @@ impl EditorView {
             }
             "BackgroundReload" => {
                 let config = self.model.editor.config.clone();
-                self.wallpaper.update(cx, |wallpaper, cx| {
-                    wallpaper.configure(&config, self.theme, true, cx)
+                self.stage.update(cx, |stage, cx| {
+                    stage.configure(&config, self.theme, true, cx)
                 });
             }
             "LspManager" | "LspInstall" => {
@@ -2718,7 +2743,6 @@ impl EditorView {
                 columns,
                 rows,
                 lines,
-                end_marker: shape(window, "~", e.config.font_size - 2., self.theme.muted),
                 search: e.last_search.clone(),
             });
         }
@@ -2745,14 +2769,18 @@ impl EditorView {
                 row,
                 color,
                 font_size: e.config.font_size,
-                line: shape(
+                line: shape_weighted(
                     window,
                     &(row + 1).to_string(),
                     e.config.font_size - 2.,
                     color,
+                    FontWeight::BOLD,
                 ),
             });
         }
+        // The stage settles its mode light toward the current mode; it ignores
+        // repeated colors, so this costs nothing between mode changes.
+        self.stage.update(cx, |stage, cx| stage.set_mode(color, cx));
         // Command input publishes its destination later in this same prepaint.
         if e.mode == Mode::Command {
             return;
@@ -2812,8 +2840,10 @@ impl EditorView {
                 bounds.size.height,
             ),
         );
+        // The caret carries the mode color: the mode is legible where you look.
+        let caret = self.theme.mode(e.mode);
         self.cursor.update(cx, |cursor, cx| {
-            cursor.update_target(target, scene, &e.config.cursor, self.theme.cursor, clip, cx)
+            cursor.update_target(target, scene, &e.config.cursor, caret, clip, cx)
         });
     }
     fn prepare_command(
@@ -2872,15 +2902,9 @@ impl EditorView {
             font_size: e.config.font_size,
             cell_width: f32::from(self.cell),
         };
+        let caret = self.theme.mode(e.mode);
         self.cursor.update(cx, |cursor, cx| {
-            cursor.update_target(
-                target,
-                scene,
-                &e.config.cursor,
-                self.theme.cursor,
-                bounds,
-                cx,
-            )
+            cursor.update_target(target, scene, &e.config.cursor, caret, bounds, cx)
         });
     }
     fn paint_command(&self, window: &mut Window, cx: &mut App) {
@@ -3904,16 +3928,46 @@ impl EditorView {
             ),
         };
         let selection = self.model.selection();
+        let guides = self.indent_guides(cache);
+        let text_left = bounds.left() + px(gutter) - self.cell * e.left as f32;
         window.with_content_mask(Some(mask), |window| {
+            // Indent guides: hairlines at each indentation level; the guide that
+            // encloses the cursor's block is lit a little brighter.
+            for (row, (levels, active)) in cache.lines.iter().zip(&guides) {
+                for level in 0..*levels {
+                    let column = level * guides.unit;
+                    if column < e.left {
+                        continue;
+                    }
+                    let x = text_left + self.cell * column as f32;
+                    window.paint_quad(fill(
+                        Bounds::new(point(x, row.origin.y), size(px(1.), px(self.line_height()))),
+                        if Some(level) == *active {
+                            self.theme.text.opacity(0.16)
+                        } else {
+                            self.theme.hairline
+                        },
+                    ));
+                }
+            }
             for row in &cache.lines {
                 if e.buffer.row() == row.source.row {
-                    window.paint_quad(fill(
-                        Bounds::new(
-                            point(bounds.left(), row.origin.y),
-                            size(bounds.size.width, px(self.line_height())),
-                        ),
-                        self.theme.active_line,
-                    ));
+                    // The current line is a faint band of light across the text
+                    // column, rounded so it reads as glass rather than a stripe.
+                    let left = bounds.left() + px(gutter - PADDING * 0.5);
+                    window.paint_quad(
+                        fill(
+                            Bounds::new(
+                                point(left, row.origin.y),
+                                size(
+                                    (bounds.right() - left - px(space::LG)).max(px(0.)),
+                                    px(self.line_height()),
+                                ),
+                            ),
+                            self.theme.active_line,
+                        )
+                        .corner_radii(Corners::all(px(design::radius::CONTROL))),
+                    );
                 }
                 // Matches keep their syntax colors (no reshaping on navigation):
                 // every match is a quiet tint, the current one is filled and outlined.
@@ -3958,13 +4012,16 @@ impl EditorView {
                         row.shape
                             .x_for_index(row.source.byte_for_char(selection.end))
                     };
-                    window.paint_quad(fill(
-                        Bounds::new(
-                            point(row.origin.x + start, row.origin.y),
-                            size((end - start).max(px(1.)), px(self.line_height())),
-                        ),
-                        self.theme.selection,
-                    ));
+                    window.paint_quad(
+                        fill(
+                            Bounds::new(
+                                point(row.origin.x + start, row.origin.y),
+                                size((end - start).max(px(1.)), px(self.line_height())),
+                            ),
+                            self.theme.selection,
+                        )
+                        .corner_radii(Corners::all(px(design::radius::INNER - 1.))),
+                    );
                 }
                 if let Some(marked) = &self.model.marked
                     && marked.end > row.source.start
@@ -3993,6 +4050,7 @@ impl EditorView {
                 }
             }
         });
+        self.paint_rail(bounds, window);
         if e.config.line_numbers {
             for row in &cache.lines {
                 let diagnostic = self
@@ -4037,19 +4095,6 @@ impl EditorView {
                 );
                 if let Err(error) = number.paint(origin, px(self.line_height()), window, cx) {
                     eprintln!("Gutter paint: {error}");
-                }
-            }
-            for index in cache.lines.len()..cache.rows {
-                let origin = point(
-                    bounds.left() + px(gutter - 14.) - cache.end_marker.width,
-                    bounds.top() + index as f32 * px(self.line_height()),
-                );
-                if let Err(error) =
-                    cache
-                        .end_marker
-                        .paint(origin, px(self.line_height()), window, cx)
-                {
-                    eprintln!("End-of-file gutter paint: {error}");
                 }
             }
         }
@@ -4120,12 +4165,24 @@ fn syntax_runs(
     runs
 }
 fn shape(window: &Window, text: &str, font_size: f32, color: Hsla) -> ShapedLine {
+    shape_weighted(window, text, font_size, color, FontWeight::NORMAL)
+}
+fn shape_weighted(
+    window: &Window,
+    text: &str,
+    font_size: f32,
+    color: Hsla,
+    weight: FontWeight,
+) -> ShapedLine {
     window.text_system().shape_line(
         text.to_owned().into(),
         px(font_size),
         &[TextRun {
             len: text.len(),
-            font: font(FONT_FAMILY),
+            font: Font {
+                weight,
+                ..font(FONT_FAMILY)
+            },
             color,
             background_color: None,
             underline: None,
@@ -4140,6 +4197,153 @@ impl EditorView {
     fn scale(&self) -> design::Scale {
         design::Scale::new(self.model.editor.config.font_size)
     }
+    /// Indentation levels for each visible row. Blank lines continue the shallower
+    /// of their neighbours so guides never break across empty lines. A row's
+    /// `active` level marks the innermost guide of the cursor's block.
+    fn indent_guides(&self, cache: &Cache) -> Guides {
+        let e = &self.model.editor;
+        let unit = e.indentation().width.max(1);
+        let tab = e.config.tab_width.max(1);
+        let measured: Vec<Option<usize>> = cache
+            .lines
+            .iter()
+            .map(|row| {
+                let mut column = 0;
+                for c in e.buffer.line_slice(row.source.row).chars() {
+                    match c {
+                        ' ' => column += 1,
+                        '\t' => column += tab - column % tab,
+                        '\n' | '\r' => return None,
+                        _ => return Some(column / unit),
+                    }
+                }
+                None
+            })
+            .collect();
+        let count = measured.len();
+        let mut levels = vec![0usize; count];
+        let mut before = 0;
+        for i in 0..count {
+            levels[i] = match measured[i] {
+                Some(level) => {
+                    before = level;
+                    level
+                }
+                None => {
+                    let after = measured[i + 1..].iter().flatten().next().copied().unwrap_or(0);
+                    before.min(after)
+                }
+            };
+        }
+        let cursor = cache
+            .lines
+            .iter()
+            .position(|r| r.source.row == e.buffer.row());
+        let mut rows: Vec<(usize, Option<usize>)> = levels.iter().map(|l| (*l, None)).collect();
+        if let Some(i) = cursor
+            && let Some(level) = levels[i].checked_sub(1)
+        {
+            // Light the guide over the contiguous block around the cursor.
+            for j in (0..=i).rev() {
+                if rows[j].0 <= level {
+                    break;
+                }
+                rows[j].1 = Some(level);
+            }
+            for row in rows.iter_mut().skip(i + 1) {
+                if row.0 <= level {
+                    break;
+                }
+                row.1 = Some(level);
+            }
+        }
+        Guides { unit, rows }
+    }
+    /// The overview rail along the editor's right edge: a lens marking the visible
+    /// span plus ticks for diagnostics (by severity) and search matches. Bounded:
+    /// inputs are capped and ticks are deduplicated per pixel row.
+    fn paint_rail(&self, bounds: Bounds<Pixels>, window: &mut Window) {
+        let e = &self.model.editor;
+        let Some(cache) = &self.cache else {
+            return;
+        };
+        let lines = e.buffer.text.len_lines().max(1) as f32;
+        let top = bounds.top() + px(space::XS);
+        let height = (bounds.size.height - px(space::MD)).max(px(1.));
+        let width = px(5.);
+        let x = bounds.right() - width - px(space::SM);
+        if lines > cache.rows as f32 {
+            window.paint_quad(
+                fill(Bounds::new(point(x, top), size(width, height)), self.theme.hover)
+                    .corner_radii(Corners::all(width / 2.)),
+            );
+            let span = (cache.rows as f32 / lines).min(1.);
+            let thumb = (height * span).max(px(22.));
+            let progress = (e.top as f32 / (lines - cache.rows as f32).max(1.)).min(1.);
+            let y = top + (height - thumb) * progress;
+            window.paint_quad(
+                fill(
+                    Bounds::new(point(x, y), size(width, thumb)),
+                    linear_gradient(
+                        180.,
+                        linear_color_stop(self.theme.lens_top, 0.),
+                        linear_color_stop(self.theme.lens_bottom, 1.),
+                    ),
+                )
+                .corner_radii(Corners::all(width / 2.))
+                .border_widths(px(1.))
+                .border_color(self.theme.lens_edge.opacity(0.5)),
+            );
+        }
+        let rows = (f32::from(height) as usize).max(1);
+        let mut seen = vec![0u8; rows];
+        let mut tick = |line: usize, rank: u8, color: Hsla, window: &mut Window| {
+            let at = (((line as f32 / lines) * rows as f32) as usize).min(rows - 1);
+            if seen[at] >= rank {
+                return;
+            }
+            seen[at] = rank;
+            window.paint_quad(
+                fill(
+                    Bounds::new(
+                        point(x - px(2.), top + px(at as f32)),
+                        size(width + px(4.), px(2.)),
+                    ),
+                    color,
+                )
+                .corner_radii(Corners::all(px(1.))),
+            );
+        };
+        if e.search_revision == e.buffer.revision {
+            let end = e.buffer.text.len_chars();
+            for range in e.search_ranges.iter().take(2048) {
+                let line = e.buffer.text.char_to_line(range.start.min(end));
+                tick(line, 1, self.theme.search.opacity(0.8), window);
+            }
+        }
+        for (_, (_, _, items)) in self
+            .services
+            .diagnostics
+            .iter()
+            .filter(|((_, id), (revision, _, _))| {
+                *id == e.document_id && *revision == e.buffer.revision
+            })
+        {
+            for d in items.iter().take(1024) {
+                let rank = match d.severity {
+                    1 => 4,
+                    2 => 3,
+                    _ => 2,
+                };
+                tick(
+                    d.range.start.line as usize,
+                    rank,
+                    self.theme.diagnostic(d.severity),
+                    window,
+                );
+            }
+        }
+    }
     fn toggle_explorer(&mut self) {
         self.explorer.visible = !self.explorer.visible;
         if !self.explorer.visible {
@@ -4151,824 +4355,6 @@ impl EditorView {
                 self.model.editor.config.navigation.clone(),
             );
         }
-    }
-    /// Title row: sidebar segment (aligned with the explorer), tabs, a drag region
-    /// and caption controls. Windows caption controls use native hit-testing only.
-    fn title_bar(
-        &self,
-        sidebar: Option<f32>,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let theme = self.theme;
-        let scale = self.scale();
-        let height = scale.title_bar();
-        let control = height - space::MD - space::XXS;
-        let mode = theme.mode(self.model.editor.mode);
-        // macOS draws its traffic lights over the leading edge of the row.
-        let inset = if cfg!(target_os = "macos") { 72. } else { 0. };
-        let project = self.explorer.root.file_name().map_or_else(
-            || self.explorer.root.display().to_string(),
-            |n| n.to_string_lossy().into_owned(),
-        );
-        let leading = div()
-            .flex_none()
-            .flex()
-            .items_center()
-            .gap(px(space::XS))
-            .h_full()
-            .pl(px(space::XS + inset))
-            .pr(px(space::SM))
-            .when_some(sidebar, |d, width| {
-                d.w(px(width.max(inset + control + space::LG)))
-                    .border_r_1()
-                    .border_color(theme.hairline)
-            })
-            .child(
-                design::icon_button(&theme, "toggle-explorer", icons::SIDEBAR, scale.ui, control)
-                    .when(self.explorer.visible, |d| d.text_color(theme.accent))
-                    .on_click(cx.listener(|v, _, w, cx| {
-                        cx.stop_propagation();
-                        v.toggle_explorer();
-                        v.focus(w, cx);
-                        cx.notify();
-                    })),
-            )
-            .when(sidebar.is_some(), |d| {
-                d.child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.))
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_ellipsis()
-                        .text_size(px(scale.small))
-                        .text_color(if self.explorer.focused {
-                            theme.accent
-                        } else {
-                            theme.secondary
-                        })
-                        .child(project.to_uppercase()),
-                )
-            });
-        let tabs = self
-            .model
-            .order
-            .iter()
-            .map(|id| {
-                let editor = self.model.get(*id).expect("live document");
-                let dirty = editor.buffer.dirty();
-                let label = editor
-                    .buffer
-                    .path
-                    .as_ref()
-                    .and_then(|p| p.file_name())
-                    .map_or_else(|| "Untitled".into(), |n| n.to_string_lossy().into_owned());
-                let (glyph, hue) = icons::file(&label);
-                let id = *id;
-                let active = id == self.model.id();
-                let group = SharedString::from(format!("tab-{id}"));
-                div()
-                    .id(("tab", id))
-                    .group(group.clone())
-                    .relative()
-                    .flex()
-                    .flex_shrink_0()
-                    .items_center()
-                    .gap(px(space::SM))
-                    .h(px(control))
-                    .min_w(px(72.))
-                    .max_w(px(220.))
-                    .pl(px(space::MD))
-                    .pr(px(space::XS))
-                    .rounded(px(design::radius::CONTROL))
-                    .cursor_pointer()
-                    .text_color(if active { theme.text } else { theme.secondary })
-                    .map(|d| {
-                        if active {
-                            d.bg(theme.active_tab)
-                        } else {
-                            d.hover(|s| s.bg(theme.hover).text_color(theme.text))
-                        }
-                    })
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |v, _, w, cx| {
-                            v.model.switch(id);
-                            v.explorer.focused = false;
-                            v.focus(w, cx);
-                            v.changed(cx);
-                        }),
-                    )
-                    .child(design::icon(
-                        glyph,
-                        scale.ui,
-                        match hue {
-                            Some(hue) if active => theme.hue(hue),
-                            Some(hue) => theme.hue(hue).opacity(0.7),
-                            None => theme.secondary,
-                        },
-                    ))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .whitespace_nowrap()
-                            .text_ellipsis()
-                            .overflow_hidden()
-                            .child(label),
-                    )
-                    .child(
-                        // Unsaved documents show a dot; the close control replaces it
-                        // under the pointer, so a click always lands on a visible ×.
-                        div()
-                            .relative()
-                            .flex_none()
-                            .size(px(control - space::MD))
-                            .when(dirty, |d| {
-                                d.child(
-                                    div()
-                                        .absolute()
-                                        .size_full()
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .text_size(px(scale.micro))
-                                        .text_color(theme.accent)
-                                        .child(icons::DOT)
-                                        .group_hover(group.clone(), |s| s.opacity(0.)),
-                                )
-                            })
-                            .child(
-                                design::icon_button(
-                                    &theme,
-                                    ("close", id),
-                                    icons::CLOSE,
-                                    scale.small,
-                                    control - space::MD,
-                                )
-                                .absolute()
-                                .opacity(if active && !dirty { 1. } else { 0. })
-                                .group_hover(group, |s| s.opacity(1.))
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(move |v, _, w, cx| {
-                                        cx.stop_propagation();
-                                        v.close_document(id, w, cx);
-                                    }),
-                                ),
-                            ),
-                    )
-                    .when(active, |d| {
-                        d.child(
-                            div()
-                                .absolute()
-                                .bottom(px(0.))
-                                .left(px(space::MD))
-                                .right(px(space::MD))
-                                .h(px(2.))
-                                .rounded(px(1.))
-                                .bg(mode),
-                        )
-                    })
-                    .into_any_element()
-            })
-            .collect::<Vec<_>>();
-        let caption = |id: &'static str, glyph: &'static str, area: WindowControlArea| {
-            let close = area == WindowControlArea::Close;
-            div()
-                .id(id)
-                .flex_none()
-                .flex()
-                .items_center()
-                .justify_center()
-                .w(px(46.))
-                .h_full()
-                .text_size(px(scale.ui))
-                .text_color(theme.secondary)
-                .window_control_area(area)
-                .hover(move |s| {
-                    if close {
-                        s.bg(theme.error).text_color(gpui::white())
-                    } else {
-                        s.bg(theme.hover).text_color(theme.text)
-                    }
-                })
-                .child(glyph)
-        };
-        let maximize_glyph = if window.is_maximized() {
-            icons::RESTORE
-        } else {
-            icons::MAXIMIZE
-        };
-        let captions: Vec<AnyElement> = if cfg!(target_os = "macos") {
-            Vec::new()
-        } else {
-            let minimize = caption("caption-minimize", icons::MINIMIZE, WindowControlArea::Min);
-            let maximize = caption("caption-maximize", maximize_glyph, WindowControlArea::Max);
-            let close = caption("close-application", icons::CLOSE, WindowControlArea::Close);
-            // Windows resolves these regions through WM_NCHITTEST; clicks are also
-            // delivered to elements there, so listeners would act twice.
-            #[cfg(not(windows))]
-            let (minimize, maximize, close) = (
-                minimize.on_click(|_, w, _| w.minimize_window()),
-                maximize.on_click(|_, w, _| w.zoom_window()),
-                close.on_click(cx.listener(|v, _, w, cx| {
-                    cx.stop_propagation();
-                    v.close(w, cx);
-                })),
-            );
-            vec![
-                minimize.into_any_element(),
-                maximize.into_any_element(),
-                close.into_any_element(),
-            ]
-        };
-        div()
-            .id("title-bar")
-            .flex()
-            .flex_none()
-            .items_center()
-            .h(px(height))
-            .bg(theme.chrome)
-            .border_b_1()
-            .border_color(theme.hairline)
-            .text_size(px(scale.ui))
-            .child(leading)
-            .child(
-                div()
-                    .id("document-tabs")
-                    .flex()
-                    .items_center()
-                    .gap(px(space::XXS))
-                    .px(px(space::XS))
-                    .h_full()
-                    .flex_shrink()
-                    .min_w(px(0.))
-                    .overflow_x_scroll()
-                    .children(tabs),
-            )
-            .child(
-                div()
-                    .id("title-bar-drag")
-                    .flex_1()
-                    .min_w(px(32.))
-                    .h_full()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|v, event: &MouseDownEvent, window, cx| {
-                            cx.stop_propagation();
-                            if event.click_count == 2 {
-                                v.title_drag = None;
-                                window.zoom_window();
-                            } else {
-                                v.title_drag = Some(event.position);
-                            }
-                        }),
-                    ),
-            )
-            .children(captions)
-            .into_any_element()
-    }
-    fn explorer_panel(&self, width: f32, cx: &mut Context<Self>) -> AnyElement {
-        let theme = self.theme;
-        let scale = self.scale();
-        let row_height = scale.row();
-        let count = self.explorer.rows.len();
-        let body = if count == 0 {
-            let (glyph, text) = if self.explorer.index.is_none() {
-                (icons::SYNC, "Indexing project…")
-            } else {
-                (icons::FOLDER, "No files to show")
-            };
-            div()
-                .flex()
-                .items_center()
-                .gap(px(space::SM))
-                .px(px(space::LG))
-                .py(px(space::MD))
-                .text_size(px(scale.small))
-                .text_color(theme.muted)
-                .child(design::icon(glyph, scale.small, theme.muted))
-                .child(text)
-                .into_any_element()
-        } else {
-            let entity = cx.entity();
-            uniform_list("explorer", count, move |range, _, cx| {
-                entity.update(cx, |v, cx| {
-                    range.map(|i| v.explorer_row(i, row_height, cx)).collect()
-                })
-            })
-            .track_scroll(self.explorer_scroll.clone())
-            .px(px(space::XS))
-            .flex_1()
-            .into_any_element()
-        };
-        div()
-            .relative()
-            .w(px(width))
-            .h_full()
-            .flex_shrink_0()
-            .flex()
-            .flex_col()
-            .pt(px(space::XS))
-            .bg(theme.sidebar)
-            .border_r_1()
-            .border_color(theme.hairline)
-            .text_size(px(scale.ui))
-            .child(body)
-            .child(
-                div()
-                    .id("explorer-resize")
-                    .absolute()
-                    .top(px(0.))
-                    .right(px(0.))
-                    .w(px(4.))
-                    .h_full()
-                    .cursor(CursorStyle::ResizeLeftRight)
-                    .when(self.resizing, |d| d.bg(theme.accent.opacity(0.5)))
-                    .hover(|s| s.bg(theme.accent.opacity(0.35)))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|v, _, _, cx| {
-                            v.resizing = true;
-                            cx.stop_propagation();
-                            cx.notify();
-                        }),
-                    ),
-            )
-            .into_any_element()
-    }
-    fn explorer_row(&self, i: usize, height: f32, cx: &mut Context<Self>) -> AnyElement {
-        let theme = self.theme;
-        let scale = self.scale();
-        let row = &self.explorer.rows[i];
-        let name = row.entry.path.file_name().map_or_else(
-            || row.entry.label.clone(),
-            |n| n.to_string_lossy().into_owned(),
-        );
-        let active = self.model.editor.buffer.path.as_ref() == Some(&row.entry.path);
-        let selected = self.explorer.focused && self.explorer.selected == i;
-        let (glyph, color) = if row.entry.directory {
-            (
-                if row.expanded {
-                    icons::FOLDER_OPEN
-                } else {
-                    icons::FOLDER
-                },
-                theme.secondary,
-            )
-        } else {
-            let (glyph, hue) = icons::file(&name);
-            (glyph, hue.map_or(theme.secondary, |h| theme.hue(h)))
-        };
-        design::row(&theme, ("file", i), selected)
-            .h(px(height))
-            .pl(px(space::XS + row.depth as f32 * 12.))
-            .gap(px(space::XS))
-            .text_color(if active || selected {
-                theme.text
-            } else {
-                theme.secondary
-            })
-            .when(active && !selected, |d| d.bg(theme.hover))
-            .child(design::icon(
-                if !row.entry.directory {
-                    ""
-                } else if row.expanded {
-                    icons::CHEVRON_DOWN
-                } else {
-                    icons::CHEVRON_RIGHT
-                },
-                scale.micro,
-                theme.muted,
-            ))
-            .child(design::icon(glyph, scale.ui, color))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .child(name),
-            )
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |v, _, w, cx| {
-                    v.explorer.focused = true;
-                    v.focus(w, cx);
-                    if let Some(path) = v.explorer.activate(i) {
-                        v.explorer.focused = false;
-                        v.request(
-                            Request::Open {
-                                path,
-                                revision: v.model.editor.buffer.revision,
-                            },
-                            cx,
-                        );
-                    }
-                    cx.notify();
-                }),
-            )
-            .into_any_element()
-    }
-    /// Status bar: mode, document identity and transient work on the left; search,
-    /// diagnostics and position on the right. Empty segments are omitted, not zeroed.
-    fn status_bar(&self) -> AnyElement {
-        let theme = self.theme;
-        let scale = self.scale();
-        let e = &self.model.editor;
-        let mode = theme.mode(e.mode);
-        let (directory, name) = match &e.buffer.path {
-            Some(path) => {
-                let shown = design::display_path(path, &self.explorer.root);
-                match shown.rfind(std::path::is_separator) {
-                    Some(at) => (shown[..=at].to_owned(), shown[at + 1..].to_owned()),
-                    None => (String::new(), shown),
-                }
-            }
-            None => (String::new(), "Untitled".to_owned()),
-        };
-        let (glyph, hue) = icons::file(&name);
-        let mut counts = [0usize; 4];
-        for (_, (_, _, items)) in
-            self.services
-                .diagnostics
-                .iter()
-                .filter(|((_, id), (revision, _, _))| {
-                    *id == e.document_id && *revision == e.buffer.revision
-                })
-        {
-            for d in items {
-                counts[(d.severity.clamp(1, 4) - 1) as usize] += 1;
-            }
-        }
-        let attached = counts.iter().any(|c| *c > 0) || self.services.completion_ready(&self.model);
-        let work = if let Some(status) = self.services.workspace_status() {
-            Some(status)
-        } else if self.busy || self.tool_busy {
-            Some("Working…".into())
-        } else {
-            None
-        };
-        let search = if e.last_search.is_empty() {
-            None
-        } else if e.search_error {
-            Some(("invalid pattern".to_owned(), theme.error))
-        } else if e.search_revision != e.buffer.revision {
-            Some(("updating…".to_owned(), theme.muted))
-        } else {
-            let position = e
-                .search_ranges
-                .binary_search_by_key(&e.buffer.cursor, |r| r.start)
-                .ok()
-                .map_or(0, |i| i + 1);
-            Some((
-                format!("{position}/{}", e.search_ranges.len()),
-                theme.secondary,
-            ))
-        };
-        let segment = || div().flex().flex_none().items_center().gap(px(space::XS));
-        let count = |glyph: &'static str, n: usize, color: Hsla| {
-            segment()
-                .text_color(if n > 0 { color } else { theme.muted })
-                .child(design::icon(
-                    glyph,
-                    scale.small,
-                    if n > 0 { color } else { theme.muted },
-                ))
-                .child(n.to_string())
-        };
-        div()
-            .flex()
-            .flex_none()
-            .items_center()
-            .gap(px(space::LG))
-            .h(px(scale.status_bar()))
-            .px(px(space::SM))
-            .overflow_hidden()
-            .bg(theme.chrome)
-            .border_t_1()
-            .border_color(theme.hairline)
-            .text_size(px(scale.small))
-            .text_color(theme.secondary)
-            .child(
-                design::badge(e.mode.label(), mode, scale.small)
-                    .h(px(scale.status_bar() - space::MD)),
-            )
-            .child(
-                segment()
-                    .flex_shrink()
-                    .min_w(px(0.))
-                    .child(design::icon(
-                        glyph,
-                        scale.small,
-                        hue.map_or(theme.secondary, |h| theme.hue(h)),
-                    ))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_shrink()
-                            .min_w(px(0.))
-                            .child(
-                                div()
-                                    .flex_shrink()
-                                    .min_w(px(0.))
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .text_ellipsis()
-                                    .text_color(theme.muted)
-                                    .child(directory),
-                            )
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .whitespace_nowrap()
-                                    .text_color(theme.text)
-                                    .child(name),
-                            ),
-                    )
-                    .when(e.buffer.dirty(), |d| {
-                        d.child(div().flex_none().text_color(theme.accent).child("modified"))
-                    }),
-            )
-            .when_some(work, |d, work| {
-                d.child(
-                    segment()
-                        .flex_shrink()
-                        .min_w(px(0.))
-                        .overflow_hidden()
-                        .text_color(theme.muted)
-                        .child(design::icon(icons::SYNC, scale.small, theme.muted))
-                        .child(
-                            div()
-                                .min_w(px(0.))
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_ellipsis()
-                                .child(work),
-                        ),
-                )
-            })
-            .child(div().flex_1())
-            .when_some(search, |d, (text, color)| {
-                d.child(
-                    segment()
-                        .text_color(color)
-                        .child(design::icon(icons::SEARCH, scale.small, color))
-                        .child(text),
-                )
-            })
-            .when(attached, |d| {
-                d.child(
-                    segment()
-                        .gap(px(space::MD))
-                        .child(count(icons::ERROR, counts[0], theme.error))
-                        .child(count(icons::WARNING, counts[1], theme.warning))
-                        .when(counts[2] + counts[3] > 0, |d| {
-                            d.child(count(icons::INFO, counts[2] + counts[3], theme.info))
-                        }),
-                )
-            })
-            .child(
-                segment()
-                    .pr(px(space::XS))
-                    .text_color(theme.secondary)
-                    .child(format!(
-                        "{}:{}",
-                        e.buffer.row() + 1,
-                        e.buffer.column(e.config.tab_width) + 1
-                    )),
-            )
-            .into_any_element()
-    }
-    /// Command line: shaped command input in Command mode, otherwise feedback.
-    /// Its height is the code line height because the command caret uses it.
-    fn command_bar(&self, cx: &mut Context<Self>) -> AnyElement {
-        let theme = self.theme;
-        let scale = self.scale();
-        let e = &self.model.editor;
-        let bar = div()
-            .flex()
-            .flex_none()
-            .items_center()
-            .h(px(self.line_height()))
-            .overflow_hidden()
-            .px(px(space::LG))
-            .bg(theme.chrome)
-            .line_height(px(self.line_height()));
-        if e.mode == Mode::Command {
-            let text = format!("{}{}", if e.searching { "/" } else { ":" }, e.command);
-            let prepare = cx.entity();
-            let paint = cx.entity();
-            return bar
-                .text_size(px(e.config.font_size))
-                .child(
-                    canvas(
-                        move |bounds, window, cx| {
-                            prepare.update(cx, |view, cx| {
-                                view.prepare_command(bounds, text, window, cx)
-                            })
-                        },
-                        move |_, (), window, cx| {
-                            paint.update(cx, |view, cx| view.paint_command(window, cx))
-                        },
-                    )
-                    .size_full(),
-                )
-                .into_any_element();
-        }
-        let bar = bar.text_size(px(scale.small)).gap(px(space::SM));
-        if e.help {
-            return bar
-                .child(design::hints(
-                    &theme,
-                    scale,
-                    &[
-                        ("W A S D", "move"),
-                        ("I", "insert"),
-                        ("V", "visual"),
-                        ("U", "undo"),
-                        ("Ctrl R", "redo"),
-                        (":e", "open"),
-                        (":w", "save"),
-                        (":q", "quit"),
-                        ("Esc", "close help"),
-                    ],
-                ))
-                .into_any_element();
-        }
-        bar.text_color(if e.error {
-            theme.error
-        } else {
-            theme.secondary
-        })
-        .when(e.error && !e.message.is_empty(), |d| {
-            d.child(design::icon(icons::ERROR, scale.small, theme.error))
-        })
-        .child(
-            div()
-                .flex_1()
-                .min_w(px(0.))
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .text_ellipsis()
-                .child(e.message.clone()),
-        )
-        .into_any_element()
-    }
-}
-impl Render for EditorView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let sidebar_width = self
-            .explorer
-            .width
-            .min((f32::from(window.viewport_size().width) - 240.).max(100.));
-        let pre = cx.entity();
-        let paint = cx.entity();
-        let overlay = cx.entity();
-        let explorer = self
-            .explorer
-            .visible
-            .then(|| self.explorer_panel(sidebar_width, cx));
-        let title = self.title_bar(self.explorer.visible.then_some(sidebar_width), window, cx);
-        let status = self.status_bar();
-        let command = self.command_bar(cx);
-        div()
-            .relative()
-            .size_full()
-            .flex()
-            .flex_col()
-            .bg(self.theme.base)
-            .child(
-                div().absolute().top(px(0.)).left(px(0.)).size_full().child(
-                    AnyView::from(self.wallpaper.clone())
-                        .cached(StyleRefinement::default().size_full()),
-                ),
-            )
-            .text_color(self.theme.text)
-            .font_family(FONT_FAMILY)
-            .track_focus(&self.focus)
-            .on_key_down(cx.listener(Self::key))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|v, event: &MouseDownEvent, _, cx| {
-                    if v.confirmation.is_none()
-                        && v.services.panel.is_some()
-                        && !v.popup_bounds.iter().any(|b| b.contains(&event.position))
-                    {
-                        v.dismiss_popup();
-                        cx.notify();
-                    }
-                }),
-            )
-            .on_mouse_move(cx.listener(|v, event: &MouseMoveEvent, window, cx| {
-                if let Some(start) = v.title_drag {
-                    if event.pressed_button != Some(MouseButton::Left) {
-                        v.title_drag = None;
-                    } else if (event.position.x - start.x).abs() > px(4.)
-                        || (event.position.y - start.y).abs() > px(4.)
-                    {
-                        v.title_drag = None;
-                        super::application::drag_window(window);
-                    }
-                }
-                if v.resizing {
-                    v.explorer.width = f32::from(event.position.x).clamp(140., 600.);
-                    cx.notify();
-                }
-            }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|v, _, _, cx| {
-                    if v.resizing {
-                        cx.notify();
-                    }
-                    v.resizing = false;
-                    v.title_drag = None;
-                }),
-            )
-            .on_mouse_up_out(
-                MouseButton::Left,
-                cx.listener(|v, _, _, cx| {
-                    if v.resizing {
-                        cx.notify();
-                    }
-                    v.resizing = false;
-                    v.title_drag = None;
-                }),
-            )
-            .child(title)
-            .child(
-                div()
-                    .flex()
-                    .flex_1()
-                    .min_h(px(0.))
-                    .children(explorer)
-                    .child(
-                        div()
-                            .relative()
-                            .flex_1()
-                            .min_h(px(0.))
-                            .overflow_hidden()
-                            .cursor(CursorStyle::IBeam)
-                            .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse))
-                            .on_mouse_move(cx.listener(Self::mouse_move))
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(|view, _, _, _| view.dragging = false),
-                            )
-                            .on_mouse_up_out(
-                                MouseButton::Left,
-                                cx.listener(|view, _, _, _| view.dragging = false),
-                            )
-                            .on_scroll_wheel(cx.listener(Self::wheel))
-                            .child(
-                                canvas(
-                                    move |b, w, cx| {
-                                        pre.update(cx, |view, cx| view.prepare(b, w, cx));
-                                    },
-                                    move |b, (), w, cx| {
-                                        let focus = paint.read(cx).focus.clone();
-                                        w.handle_input(
-                                            &focus,
-                                            ElementInputHandler::new(b, paint.clone()),
-                                            cx,
-                                        );
-                                        paint.update(cx, |view, cx| view.paint(b, w, cx));
-                                    },
-                                )
-                                .size_full(),
-                            ),
-                    ),
-            )
-            .children(self.manager_notice(cx))
-            .child(status)
-            .child(command)
-            .child(
-                canvas(
-                    move |_, window, cx| {
-                        let draws = overlay.update(cx, |view, cx| view.popups(window, cx));
-                        for (mut element, origin) in draws {
-                            let viewport = window.viewport_size();
-                            element.layout_as_root(
-                                size(
-                                    AvailableSpace::Definite(viewport.width),
-                                    AvailableSpace::Definite(viewport.height),
-                                ),
-                                window,
-                                cx,
-                            );
-                            window.defer_draw(element, origin, 20);
-                        }
-                    },
-                    |_, (), _, _| {},
-                )
-                .absolute()
-                .size_full()
-                .top(px(0.))
-                .left(px(0.)),
-            )
     }
 }
 impl EntityInputHandler for EditorView {

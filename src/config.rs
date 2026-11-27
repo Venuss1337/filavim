@@ -141,7 +141,7 @@ impl Default for Config {
             auto_indent: true,
             detect_indentation: true,
             line_numbers: true,
-            theme_name: "cyberdream".into(),
+            theme_name: "lucent".into(),
             appearance: Default::default(),
             background: Default::default(),
             theme: BTreeMap::new(),
@@ -197,6 +197,7 @@ impl Config {
                 "transparent",
                 "saturation",
                 "italic_comments",
+                "glass",
                 "surfaces",
             ] {
                 if let Some(value) = theme.remove(key) {
@@ -241,8 +242,11 @@ impl Config {
                 "cursor duration_ms/short_duration_ms must be 16..250, trail_size 0..1 and fps 24..120"
             );
         }
-        if !matches!(c.theme_name.as_str(), "rose-pine-moon" | "cyberdream") {
-            bail!("Theme must be cyberdream or rose-pine-moon");
+        if !matches!(
+            c.theme_name.as_str(),
+            "lucent" | "rose-pine-moon" | "cyberdream"
+        ) {
+            bail!("Theme must be lucent, cyberdream or rose-pine-moon");
         }
         let surface = &c.appearance.surfaces;
         if ![

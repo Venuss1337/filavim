@@ -3,12 +3,14 @@
 //! The root keeps a cached editor entity and a separate cursor entity as siblings,
 //! so cursor-only frames need not rebuild editor content. Unsaved-close decisions
 //! are delegated to `EditorView`; smoke entry points exercise this same window path.
-use super::{FONT_BYTES, model, view};
+use super::{FONT_BOLD_BYTES, FONT_BYTES, model, view};
 use gpui::{prelude::*, *};
 use std::{borrow::Cow, path::PathBuf};
-/// Cache the editor as a sibling of cursor effects so animation does not rebuild
-/// tabs, text, popup layout or input handlers when only cursor pixels change.
+/// Cache the editor between two independently animated siblings: the stage
+/// beneath it (world, slab material, mode light) and the cursor above it. Their
+/// frames never rebuild tabs, text, popup layout or input handlers.
 pub(super) struct NativeWindow {
+    stage: Entity<super::stage::Stage>,
     editor: Entity<view::EditorView>,
     cursor: Entity<super::cursor_view::CursorView>,
     toasts: Entity<super::toast_view::ToastView>,
@@ -28,6 +30,14 @@ impl Render for NativeWindow {
         div()
             .relative()
             .size_full()
+            .child(
+                div()
+                    .absolute()
+                    .top(px(0.))
+                    .left(px(0.))
+                    .size_full()
+                    .child(self.stage.clone()),
+            )
             .child(
                 AnyView::from(self.editor.clone()).cached(StyleRefinement::default().size_full()),
             )
@@ -107,7 +117,9 @@ fn run_inner(
         if let Some(p) = &report {
             let _ = std::fs::write(p, "application callback\n");
         }
-        if let Err(e) = cx.text_system().add_fonts(vec![Cow::Borrowed(FONT_BYTES)]) {
+        if let Err(e) = cx
+            .text_system()
+            .add_fonts(vec![Cow::Borrowed(FONT_BYTES), Cow::Borrowed(FONT_BOLD_BYTES)]) {
             *failure.borrow_mut()=Some(anyhow::anyhow!("Cannot load bundled Agave font: {e}"));
             cx.quit();
             return;
@@ -151,7 +163,8 @@ fn run_inner(
                 });
                 let cursor=editor.read(cx).cursor.clone();
                 let toasts=editor.read(cx).toasts.clone();
-                cx.new(|_|NativeWindow{editor,cursor,toasts})
+                let stage=editor.read(cx).stage.clone();
+                cx.new(|_|NativeWindow{stage,editor,cursor,toasts})
             },
         );
         match result {

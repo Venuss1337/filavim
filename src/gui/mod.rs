@@ -21,6 +21,8 @@ mod view;
 pub mod viewport;
 pub const FONT_FAMILY: &str = "Agave Nerd Font Mono";
 pub const FONT_BYTES: &[u8] = include_bytes!("../../assets/fonts/AgaveNerdFontMono-Regular.ttf");
+/// The bold face of the same family, used sparingly for titles and the mark.
+pub const FONT_BOLD_BYTES: &[u8] = include_bytes!("../../assets/fonts/AgaveNerdFontMono-Bold.ttf");
 
 #[cfg(feature = "native")]
 mod application;
@@ -41,6 +43,11 @@ mod cursor_view;
 pub mod completion;
 mod completion_context;
 
+#[cfg(feature = "native")]
+mod frost;
+pub mod motion;
+#[cfg(feature = "native")]
+mod stage;
 #[cfg(feature = "native")]
 mod wallpaper;
 

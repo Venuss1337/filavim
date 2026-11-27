@@ -3,6 +3,8 @@ use serde::Deserialize;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ThemeName {
+    /// FilaVim's own luminous-glass palette; the default.
+    Lucent,
     Cyberdream,
     RosePineMoon,
 }
@@ -33,6 +35,18 @@ impl Default for Surfaces {
         }
     }
 }
+/// How the main slab treats the world behind it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Glass {
+    /// Blurred world, tinted and grained: the signature material.
+    #[default]
+    Frosted,
+    /// The sharp world under a tint; no blur bake.
+    Clear,
+    /// An opaque gradient slab; the world shows only around it.
+    Solid,
+}
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ThemeConfig {
@@ -41,6 +55,7 @@ pub struct ThemeConfig {
     pub transparent: bool,
     pub saturation: f32,
     pub italic_comments: bool,
+    pub glass: Glass,
     pub surfaces: Surfaces,
 }
 impl Default for ThemeConfig {
@@ -51,6 +66,7 @@ impl Default for ThemeConfig {
             transparent: true,
             saturation: 1.,
             italic_comments: false,
+            glass: Glass::Frosted,
             surfaces: Surfaces::default(),
         }
     }
@@ -79,7 +95,8 @@ impl Default for BackgroundConfig {
             image: None,
             fit: Fit::Cover,
             opacity: 1.,
-            overlay_opacity: 0.45,
+            // Glass panes carry legibility; the world around them stays vivid.
+            overlay_opacity: 0.15,
         }
     }
 }

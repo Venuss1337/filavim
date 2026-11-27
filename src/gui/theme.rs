@@ -1,10 +1,18 @@
 //! GPUI semantic colors resolved from shared palettes and appearance settings.
 //!
 //! [`crate::palette`] owns palette RGB values; [`crate::appearance`] owns portable
-//! settings. Resolve [`Theme`] when settings change, not while painting each row.
+//! settings. Resolve [`Theme`] when settings change, never while painting rows.
+//!
+//! Lucent separates three families of roles (see DESIGN.md §4):
+//! - **Ink** (`text`, `secondary`, `muted`, `faint`): one hue at four emphasis
+//!   levels, always drawn at full alpha over any material.
+//! - **Materials** (`glass_*`, `float_*`, `lens_*`, `well`, `rim`, `edge`, `sheen`):
+//!   the light-bearing surfaces. Materials are translucent by design.
+//! - **Signals** (`accent`, mode colors, severities): color that means something.
 use crate::{
+    appearance::Glass,
     config::Config,
-    palette::{Cyber, Moon, blend},
+    palette::{Cyber, Lucent, Moon, blend},
     syntax::Token,
 };
 use gpui::{Hsla, rgb};
@@ -21,39 +29,58 @@ pub enum Hue {
     Purple,
 }
 /// Resolved once on settings changes; the renderer uses semantic roles only.
-///
-/// Interaction tints (`hover`, `pressed`) are derived from the foreground so they
-/// read the same over opaque surfaces and translucent wallpaper. `hairline`
-/// separates docked chrome; `scrim` and `shadow` belong to elevated layers only.
 #[derive(Clone, Copy)]
 pub struct Theme {
+    pub light: bool,
+    /// Effective slab material after `theme.transparent` is applied.
+    pub glass: Glass,
+    // Ink, brightest to faintest.
+    pub text: Hsla,
+    pub secondary: Hsla,
+    pub muted: Hsla,
+    pub faint: Hsla,
+    /// The interface signal: keyboard focus, primary actions, unsaved state.
+    pub accent: Hsla,
+    // World: what lies behind the slab.
+    pub base: Hsla,
+    /// Tint laid over the wallpaper everywhere (`background.overlay_opacity`).
+    pub world_tint: Hsla,
+    // Materials.
+    /// Main slab tint, top and bottom of its vertical gradient.
+    pub glass_top: Hsla,
+    pub glass_bottom: Hsla,
+    /// Floating glass (popups, pickers, toasts, dialogs): near-opaque.
+    pub float_top: Hsla,
+    pub float_bottom: Hsla,
+    /// Lit upper rim and the dim outline it fades into.
+    pub rim: Hsla,
+    pub edge: Hsla,
+    /// Faint highlight just inside a lit top edge.
+    pub sheen: Hsla,
+    /// Recessed groove (tab well, segmented tracks, inputs).
+    pub well: Hsla,
+    pub well_edge: Hsla,
+    /// The lens: a raised, brighter pane that marks the current selection.
+    pub lens_top: Hsla,
+    pub lens_bottom: Hsla,
+    pub lens_edge: Hsla,
     pub hover: Hsla,
     pub pressed: Hsla,
     pub hairline: Hsla,
     pub scrim: Hsla,
     pub shadow: Hsla,
-    pub light: bool,
-    hues: [Hsla; 7],
-    pub base: Hsla,
-    pub surface: Hsla,
-    pub chrome: Hsla,
-    pub active_tab: Hsla,
-    pub sidebar: Hsla,
+    // Compatibility roles still read by older surfaces.
     pub overlay: Hsla,
-    pub editor: Hsla,
-    pub muted: Hsla,
-    pub text: Hsla,
-    pub accent: Hsla,
-    pub selection: Hsla,
+    pub popup_border: Hsla,
     pub popup_selection: Hsla,
+    // Signals.
     pub error: Hsla,
     pub success: Hsla,
-    pub secondary: Hsla,
-    pub border: Hsla,
-    pub popup_border: Hsla,
     pub warning: Hsla,
     pub info: Hsla,
     pub hint: Hsla,
+    // Editor.
+    pub selection: Hsla,
     pub active_line: Hsla,
     pub gutter: Hsla,
     pub cursor: Hsla,
@@ -61,6 +88,7 @@ pub struct Theme {
     pub punctuation: Hsla,
     pub search: Hsla,
     pub italic_comments: bool,
+    hues: [Hsla; 7],
     string: Hsla,
     number: Hsla,
     function: Hsla,
@@ -73,6 +101,185 @@ pub struct Theme {
     preprocessor: Hsla,
     kinds: [Hsla; 26],
     modes: [Hsla; 4],
+}
+/// Palette-specific inputs; everything else is derived identically.
+struct Source {
+    light: bool,
+    night: u32,
+    glass_top: u32,
+    glass_bottom: u32,
+    ink: [u32; 4],
+    accent: u32,
+    error: u32,
+    success: u32,
+    warning: u32,
+    info: u32,
+    hint: u32,
+    search: u32,
+    selection: u32,
+    punctuation: u32,
+    hues: [u32; 7],
+    /// String, number, function, keyword, type, constant, boolean, operator,
+    /// statement, preprocessor.
+    syntax: [u32; 10],
+    modes: [u32; 4],
+    kinds: [u32; 26],
+}
+fn lucent(p: Lucent, light: bool) -> Source {
+    let mut kinds = [p.ink2; 26];
+    for (kind, value) in [
+        (1, p.ink3),
+        (2, p.ice),
+        (3, p.ice),
+        (4, p.ice),
+        (5, p.aqua),
+        (6, p.ink2),
+        (7, p.aqua),
+        (8, p.aqua),
+        (9, p.lilac),
+        (10, p.aqua),
+        (11, p.gold),
+        (12, p.peach),
+        (13, p.aqua),
+        (14, p.lilac),
+        (15, p.mint),
+        (16, p.gold),
+        (17, p.ink2),
+        (18, p.ink2),
+        (19, p.ink2),
+        (20, p.peach),
+        (21, p.peach),
+        (22, p.aqua),
+        (23, p.rose),
+        (24, p.slate),
+        (25, p.aqua),
+    ] {
+        kinds[kind] = value;
+    }
+    Source {
+        light,
+        night: p.night,
+        glass_top: p.glass_top,
+        glass_bottom: p.glass_bottom,
+        ink: [p.ink, p.ink2, p.ink3, p.ink4],
+        accent: p.ice,
+        error: p.coral,
+        success: p.mint,
+        warning: p.amber,
+        info: p.ice,
+        hint: p.lilac,
+        search: p.gold,
+        selection: p.ice,
+        punctuation: p.slate,
+        hues: [p.ice, p.mint, p.aqua, p.gold, p.orchid, p.peach, p.lilac],
+        syntax: [
+            p.sage, p.peach, p.ice, p.lilac, p.aqua, p.orchid, p.peach, p.slate, p.rose, p.gold,
+        ],
+        modes: [p.ice, p.mint, p.lilac, p.amber],
+        kinds,
+    }
+}
+fn cyber(p: Cyber, light: bool) -> Source {
+    let mut kinds = [p.fg; 26];
+    for (kind, value) in [
+        (1, p.green),
+        (2, p.blue),
+        (3, p.blue),
+        (4, p.purple),
+        (5, p.green),
+        (6, p.orange),
+        (7, p.blue),
+        (8, p.blue),
+        (9, p.blue),
+        (10, p.red),
+        (11, p.orange),
+        (12, p.orange),
+        (13, p.orange),
+        (14, p.magenta),
+        (15, p.green),
+        (16, p.green),
+        (17, p.green),
+        (18, p.green),
+        (19, p.green),
+        (20, p.orange),
+        (21, p.pink),
+        (22, p.blue),
+        (23, p.green),
+        (24, p.magenta),
+        (25, p.pink),
+    ] {
+        kinds[kind] = value;
+    }
+    Source {
+        light,
+        night: p.bg,
+        glass_top: blend(p.bg_alt, p.fg, if light { 0.9 } else { 0.94 }),
+        glass_bottom: p.bg,
+        ink: [
+            p.fg,
+            blend(p.fg, p.grey, 0.55),
+            p.grey,
+            blend(p.grey, p.bg, 0.55),
+        ],
+        accent: p.cyan,
+        error: p.red,
+        success: p.green,
+        warning: p.yellow,
+        info: p.blue,
+        hint: p.cyan,
+        search: p.cyan,
+        selection: p.blue,
+        punctuation: p.fg,
+        hues: [p.blue, p.green, p.cyan, p.yellow, p.magenta, p.orange, p.purple],
+        syntax: [
+            p.green, p.orange, p.blue, p.orange, p.purple, p.pink, p.cyan, p.purple, p.magenta,
+            p.cyan,
+        ],
+        modes: [p.blue, p.green, p.purple, p.cyan],
+        kinds,
+    }
+}
+fn moon(c: &Config) -> Source {
+    let m = |role: Moon| role.resolve(&c.theme);
+    Source {
+        light: false,
+        night: m(Moon::Base),
+        glass_top: m(Moon::Overlay),
+        glass_bottom: m(Moon::Base),
+        ink: [m(Moon::Text), m(Moon::Subtle), m(Moon::Muted), m(Moon::HighlightHigh)],
+        accent: m(Moon::Iris),
+        error: m(Moon::Love),
+        success: m(Moon::Foam),
+        warning: m(Moon::Gold),
+        info: m(Moon::Foam),
+        hint: m(Moon::Iris),
+        search: m(Moon::Foam),
+        selection: m(Moon::Iris),
+        punctuation: m(Moon::Subtle),
+        hues: [
+            m(Moon::Pine),
+            m(Moon::Foam),
+            m(Moon::Foam),
+            m(Moon::Gold),
+            m(Moon::Iris),
+            m(Moon::Gold),
+            m(Moon::Iris),
+        ],
+        syntax: [
+            m(Moon::Gold),
+            m(Moon::Rose),
+            m(Moon::Pine),
+            m(Moon::Iris),
+            m(Moon::Foam),
+            m(Moon::Rose),
+            m(Moon::Rose),
+            m(Moon::Subtle),
+            m(Moon::Iris),
+            m(Moon::Love),
+        ],
+        modes: [m(Moon::Pine), m(Moon::Foam), m(Moon::Iris), m(Moon::Gold)],
+        kinds: [m(Moon::Foam); 26],
+    }
 }
 impl Theme {
     pub fn mode(&self, mode: crate::editor::Mode) -> Hsla {
@@ -115,194 +322,135 @@ impl Theme {
         }
     }
     pub fn new(c: &Config) -> Self {
+        use crate::appearance::{ThemeName, Variant};
         let options = &c.appearance;
+        let name = options.name.unwrap_or(match c.theme_name.as_str() {
+            "cyberdream" => ThemeName::Cyberdream,
+            "rose-pine-moon" => ThemeName::RosePineMoon,
+            _ => ThemeName::Lucent,
+        });
+        let light = options.variant == Variant::Light;
+        let s = match name {
+            ThemeName::Lucent => lucent(Lucent::variant(options.variant), light),
+            ThemeName::Cyberdream => cyber(Cyber::variant(options.variant), light),
+            ThemeName::RosePineMoon => moon(c),
+        };
         let color = |value: u32| -> Hsla {
             let mut color: Hsla = rgb(value).into();
             color.s *= options.saturation;
             color
         };
-        let moon = |role: Moon| color(role.resolve(&c.theme));
-        let cyber = options.name.map_or(c.theme_name == "cyberdream", |name| {
-            name == crate::appearance::ThemeName::Cyberdream
-        });
-        let p = Cyber::variant(options.variant);
-        // Derived interaction roles are filled in below, once text/base are known.
-        let unset = Hsla::default();
-        let mut t = if cyber {
-            Self {
-                hover: unset,
-                pressed: unset,
-                hairline: unset,
-                scrim: unset,
-                shadow: unset,
-                light: options.variant == crate::appearance::Variant::Light,
-                hues: [
-                    color(p.blue),
-                    color(p.green),
-                    color(p.cyan),
-                    color(p.yellow),
-                    color(p.magenta),
-                    color(p.orange),
-                    color(p.purple),
-                ],
-                base: color(p.bg),
-                surface: color(p.bg_alt),
-                chrome: color(p.bg_alt),
-                active_tab: color(p.bg_highlight),
-                sidebar: color(p.bg_alt),
-                // Floating layers sit one step above the editor plane.
-                overlay: color(p.bg_alt),
-                editor: color(p.bg),
-                muted: color(p.grey),
-                text: color(p.fg),
-                accent: color(p.cyan),
-                selection: color(p.bg_highlight),
-                popup_selection: color(p.bg_highlight),
-                error: color(p.red),
-                success: color(p.green),
-                secondary: color(p.grey),
-                border: color(p.bg_highlight),
-                popup_border: color(blend(p.bg_highlight, p.grey, 0.7)),
-                warning: color(p.yellow),
-                info: color(p.blue),
-                hint: color(p.cyan),
-                active_line: color(p.bg_highlight),
-                gutter: color(blend(p.bg_highlight, p.fg, 0.9)),
-                cursor: color(p.fg),
-                matched: color(p.cyan),
-                punctuation: color(p.fg),
-                search: color(p.cyan),
-                italic_comments: options.italic_comments,
-                string: color(p.green),
-                number: color(p.orange),
-                function: color(p.blue),
-                keyword: color(p.orange),
-                type_color: color(p.purple),
-                constant: color(p.pink),
-                boolean: color(p.cyan),
-                operator: color(p.purple),
-                statement: color(p.magenta),
-                preprocessor: color(p.cyan),
-                kinds: [color(p.fg); 26],
-                modes: [
-                    color(p.blue),
-                    color(p.green),
-                    color(p.purple),
-                    color(p.cyan),
-                ],
-            }
+        let glass = if options.transparent {
+            options.glass
         } else {
-            Self {
-                hover: unset,
-                pressed: unset,
-                hairline: unset,
-                scrim: unset,
-                shadow: unset,
-                light: false,
-                hues: [
-                    moon(Moon::Pine),
-                    moon(Moon::Foam),
-                    moon(Moon::Foam),
-                    moon(Moon::Gold),
-                    moon(Moon::Iris),
-                    moon(Moon::Gold),
-                    moon(Moon::Iris),
-                ],
-                base: moon(Moon::Base),
-                surface: moon(Moon::Surface),
-                chrome: moon(Moon::Surface),
-                active_tab: moon(Moon::HighlightMed),
-                sidebar: moon(Moon::Surface),
-                overlay: moon(Moon::Overlay),
-                editor: moon(Moon::Base),
-                muted: moon(Moon::Muted),
-                text: moon(Moon::Text),
-                accent: moon(Moon::Iris),
-                selection: moon(Moon::HighlightMed),
-                popup_selection: moon(Moon::HighlightMed),
-                error: moon(Moon::Love),
-                success: moon(Moon::Foam),
-                secondary: moon(Moon::Subtle),
-                border: moon(Moon::HighlightHigh),
-                popup_border: moon(Moon::HighlightHigh),
-                warning: moon(Moon::Gold),
-                info: moon(Moon::Foam),
-                hint: moon(Moon::Iris),
-                active_line: moon(Moon::HighlightLow),
-                gutter: moon(Moon::Muted),
-                cursor: moon(Moon::Text),
-                matched: moon(Moon::Foam),
-                punctuation: moon(Moon::Subtle),
-                search: moon(Moon::Foam),
-                italic_comments: options.italic_comments,
-                string: moon(Moon::Gold),
-                number: moon(Moon::Rose),
-                function: moon(Moon::Pine),
-                keyword: moon(Moon::Iris),
-                type_color: moon(Moon::Foam),
-                constant: moon(Moon::Rose),
-                boolean: moon(Moon::Rose),
-                operator: moon(Moon::Subtle),
-                statement: moon(Moon::Iris),
-                preprocessor: moon(Moon::Love),
-                kinds: [moon(Moon::Foam); 26],
-                modes: [
-                    moon(Moon::Pine),
-                    moon(Moon::Foam),
-                    moon(Moon::Iris),
-                    moon(Moon::Foam),
-                ],
-            }
+            Glass::Solid
         };
-        if cyber {
-            for (kind, value) in [
-                (1, p.green),
-                (2, p.blue),
-                (3, p.blue),
-                (4, p.purple),
-                (5, p.green),
-                (6, p.orange),
-                (7, p.blue),
-                (8, p.blue),
-                (9, p.blue),
-                (10, p.red),
-                (11, p.orange),
-                (12, p.orange),
-                (13, p.orange),
-                (14, p.magenta),
-                (15, p.green),
-                (16, p.green),
-                (17, p.green),
-                (18, p.green),
-                (19, p.green),
-                (20, p.orange),
-                (21, p.pink),
-                (22, p.blue),
-                (23, p.green),
-                (24, p.magenta),
-                (25, p.pink),
-            ] {
-                t.kinds[kind] = color(value);
-            }
-        }
-        t.hover = t.text.opacity(if t.light { 0.07 } else { 0.06 });
-        t.pressed = t.text.opacity(if t.light { 0.12 } else { 0.10 });
-        t.hairline = t.border.opacity(if t.light { 0.9 } else { 0.7 });
-        t.scrim = t.base.opacity(if t.light { 0.45 } else { 0.55 });
-        t.shadow = gpui::black().opacity(if t.light { 0.16 } else { 0.45 });
-        // State fills are translucent in every mode, so the cursor line, active
-        // tab and list selection read the same over opaque or wallpaper surfaces.
-        t.active_tab = t.active_tab.opacity(0.45);
-        t.popup_selection = t.popup_selection.opacity(0.5);
-        t.active_line = t.active_line.opacity(0.35);
-        if options.transparent {
-            // The root wallpaper already supplies the shared readability tint.
-            t.chrome = t.chrome.opacity(0.);
-            t.editor = t.base.opacity(options.surfaces.editor_opacity);
-            t.overlay = t.overlay.opacity(options.surfaces.popup_opacity);
-            t.sidebar = t.sidebar.opacity(options.surfaces.sidebar_opacity);
-            // Keep large chrome quieter, but never fade its text or children.
-            t.surface = t.surface.opacity(options.surfaces.popup_opacity);
+        let light = s.light;
+        let ink = color(s.ink[0]);
+        let white = gpui::white();
+        let black = gpui::black();
+        // Glass alpha by material. Frosted glass sits over an already blurred
+        // world, so it can be thinner than clear glass for the same legibility.
+        // The bake's legibility clamp guarantees contrast over bright worlds,
+        // so baked glass can stay thin enough for the world's hue to come through.
+        let (top_alpha, bottom_alpha) = match (glass, light) {
+            (Glass::Frosted, false) => (0.42, 0.66),
+            (Glass::Clear, false) => (0.62, 0.80),
+            (Glass::Frosted, true) => (0.55, 0.74),
+            (Glass::Clear, true) => (0.70, 0.84),
+            (Glass::Solid, _) => (1., 1.),
+        };
+        let float = options.surfaces.popup_opacity;
+        let syntax = s.syntax.map(color);
+        let mut t = Self {
+            light,
+            glass,
+            text: ink,
+            secondary: color(s.ink[1]),
+            muted: color(s.ink[2]),
+            faint: color(s.ink[3]),
+            accent: color(s.accent),
+            base: color(s.night),
+            world_tint: color(s.night).opacity(c.background.overlay_opacity),
+            glass_top: color(s.glass_top).opacity(top_alpha),
+            glass_bottom: color(s.glass_bottom).opacity(bottom_alpha),
+            float_top: color(blend(s.glass_top, s.ink[0], if light { 1. } else { 0.97 }))
+                .opacity(float),
+            float_bottom: color(blend(s.glass_bottom, s.glass_top, 0.55))
+                .opacity((float + 0.04).min(1.)),
+            rim: if light {
+                white.opacity(0.95)
+            } else {
+                white.opacity(0.42)
+            },
+            edge: if light {
+                black.opacity(0.10)
+            } else {
+                white.opacity(0.09)
+            },
+            sheen: white.opacity(if light { 0.55 } else { 0.06 }),
+            well: if light {
+                black.opacity(0.06)
+            } else {
+                black.opacity(0.22)
+            },
+            well_edge: if light {
+                black.opacity(0.06)
+            } else {
+                white.opacity(0.06)
+            },
+            lens_top: if light {
+                white.opacity(0.95)
+            } else {
+                white.opacity(0.16)
+            },
+            lens_bottom: if light {
+                white.opacity(0.75)
+            } else {
+                white.opacity(0.07)
+            },
+            lens_edge: if light {
+                black.opacity(0.10)
+            } else {
+                white.opacity(0.20)
+            },
+            hover: ink.opacity(if light { 0.06 } else { 0.06 }),
+            pressed: ink.opacity(if light { 0.10 } else { 0.10 }),
+            hairline: ink.opacity(if light { 0.10 } else { 0.08 }),
+            scrim: color(s.night).opacity(if light { 0.35 } else { 0.50 }),
+            shadow: black.opacity(if light { 0.16 } else { 0.55 }),
+            overlay: color(s.glass_top).opacity(float),
+            popup_border: ink.opacity(0.14),
+            popup_selection: ink.opacity(if light { 0.08 } else { 0.10 }),
+            error: color(s.error),
+            success: color(s.success),
+            warning: color(s.warning),
+            info: color(s.info),
+            hint: color(s.hint),
+            selection: color(s.selection).opacity(if light { 0.22 } else { 0.28 }),
+            active_line: ink.opacity(if light { 0.045 } else { 0.035 }),
+            gutter: color(s.ink[3]),
+            cursor: ink,
+            matched: color(s.accent),
+            punctuation: color(s.punctuation),
+            search: color(s.search),
+            italic_comments: options.italic_comments,
+            hues: s.hues.map(color),
+            string: syntax[0],
+            number: syntax[1],
+            function: syntax[2],
+            keyword: syntax[3],
+            type_color: syntax[4],
+            constant: syntax[5],
+            boolean: syntax[6],
+            operator: syntax[7],
+            statement: syntax[8],
+            preprocessor: syntax[9],
+            kinds: s.kinds.map(color),
+            modes: s.modes.map(color),
+        };
+        if glass == Glass::Solid {
+            t.world_tint = t.base.opacity(0.);
         }
         t
     }
@@ -318,64 +466,62 @@ mod tests {
             | (c.b * 255.).round() as u32
     }
     #[test]
-    fn official_palettes_semantic_roles_and_transparency() {
+    fn lucent_is_the_default_with_semantic_roles_and_materials() {
         let t = Theme::new(&Config::default());
-        assert_eq!(hex(t.base), Cyber::DARK.bg);
-        assert_eq!(hex(t.text), Cyber::DARK.fg);
+        let p = Lucent::DARK;
+        assert_eq!(hex(t.base), p.night);
+        assert_eq!(hex(t.text), p.ink);
+        assert_eq!(hex(t.accent), p.ice);
+        assert_eq!(t.glass, Glass::Frosted);
         for (token, expected) in [
-            (Token::String, Cyber::DARK.green),
-            (Token::Function, Cyber::DARK.blue),
-            (Token::Type, Cyber::DARK.purple),
-            (Token::Boolean, Cyber::DARK.cyan),
-            (Token::Operator, Cyber::DARK.purple),
-            (Token::Keyword, Cyber::DARK.orange),
-            (Token::Constant, Cyber::DARK.pink),
-            (Token::Statement, Cyber::DARK.magenta),
+            (Token::String, p.sage),
+            (Token::Function, p.ice),
+            (Token::Type, p.aqua),
+            (Token::Keyword, p.lilac),
+            (Token::Statement, p.rose),
+            (Token::Comment, p.ink3),
         ] {
             assert_eq!(hex(t.token(token)), expected);
         }
-        assert_eq!(hex(t.diagnostic(1)), Cyber::DARK.red);
-        assert_eq!(hex(t.diagnostic(2)), Cyber::DARK.yellow);
-        assert_eq!(hex(t.diagnostic(3)), Cyber::DARK.blue);
-        assert_eq!(hex(t.diagnostic(4)), Cyber::DARK.cyan);
-        assert_eq!(hex(t.completion_kind(10)), Cyber::DARK.red);
-        assert_eq!(
-            hex(t.popup_border),
-            blend(Cyber::DARK.bg_highlight, Cyber::DARK.grey, 0.7)
-        );
-        assert_eq!(t.text.a, 1.);
-        assert_eq!(t.editor.a, 0.);
-        assert_eq!(t.chrome.a, 0.);
-        assert_eq!(t.sidebar.a, 0.);
-        assert_eq!(t.active_tab.a, 0.45);
-        assert_eq!(t.overlay.a, 0.92);
-        assert_eq!(hex(t.overlay), Cyber::DARK.bg_alt);
-        assert_eq!(hex(t.hue(Hue::Orange)), Cyber::DARK.orange);
-        assert!(t.hover.a < 0.1 && t.scrim.a > 0.4 && !t.light);
-        assert_eq!(t.popup_selection.a, 0.5);
+        assert_eq!(hex(t.diagnostic(1)), p.coral);
+        assert_eq!(hex(t.diagnostic(2)), p.amber);
         for (mode, expected) in [
-            (crate::editor::Mode::Normal, Cyber::DARK.blue),
-            (crate::editor::Mode::Insert, Cyber::DARK.green),
-            (crate::editor::Mode::Visual, Cyber::DARK.purple),
-            (crate::editor::Mode::Command, Cyber::DARK.cyan),
+            (crate::editor::Mode::Normal, p.ice),
+            (crate::editor::Mode::Insert, p.mint),
+            (crate::editor::Mode::Visual, p.lilac),
+            (crate::editor::Mode::Command, p.amber),
         ] {
             assert_eq!(hex(t.mode(mode)), expected);
         }
-        for (variant, expected) in [("light", Cyber::LIGHT), ("muted", Cyber::MUTED)] {
-            let config =
-                Config::parse(&format!("[theme]\nvariant='{variant}'\ntransparent=false")).unwrap();
-            let t = Theme::new(&config);
-            assert_eq!(hex(t.base), expected.bg);
-            assert_eq!(t.light, variant == "light");
-            assert_eq!(hex(t.token(Token::String)), expected.green);
-            assert_eq!(t.editor.a, 1.);
-            assert_eq!(t.chrome.a, 1.);
-            // Opaque surfaces stay opaque; state fills remain translucent tints.
-            assert_eq!(t.overlay.a, 1.);
-            assert_eq!((t.active_tab.a, t.active_line.a), (0.45, 0.35));
+        // Ink is always opaque; materials are translucent and brighten upward.
+        for ink in [t.text, t.secondary, t.muted, t.faint] {
+            assert_eq!(ink.a, 1.);
         }
-        let t = Theme::new(&Config::parse("[theme]\nname='rose-pine-moon'").unwrap());
-        assert_eq!(hex(t.base), Moon::Base.rgb());
-        assert_eq!(hex(t.text), Moon::Text.rgb());
+        assert!(t.glass_top.a < t.glass_bottom.a && t.glass_bottom.a < 1.);
+        assert!(t.rim.a > t.edge.a && t.lens_top.a > t.lens_bottom.a);
+        assert!(t.float_top.a >= 0.9 && t.hover.a < 0.1 && t.scrim.a > 0.3);
+    }
+    #[test]
+    fn variants_glass_qualities_and_other_palettes() {
+        let solid = Theme::new(&Config::parse("[theme]\ntransparent=false").unwrap());
+        assert_eq!(solid.glass, Glass::Solid);
+        assert_eq!((solid.glass_top.a, solid.glass_bottom.a), (1., 1.));
+        assert_eq!(solid.world_tint.a, 0.);
+        let clear = Theme::new(&Config::parse("[theme]\nglass='clear'").unwrap());
+        let frosted = Theme::new(&Config::default());
+        assert!(clear.glass_top.a > frosted.glass_top.a);
+        let light = Theme::new(&Config::parse("[theme]\nvariant='light'").unwrap());
+        assert!(light.light);
+        assert_eq!(hex(light.text), Lucent::LIGHT.ink);
+        let cyber = Theme::new(&Config::parse("[theme]\nname='cyberdream'").unwrap());
+        assert_eq!(hex(cyber.base), Cyber::DARK.bg);
+        assert_eq!(hex(cyber.token(Token::String)), Cyber::DARK.green);
+        assert_eq!(hex(cyber.completion_kind(10)), Cyber::DARK.red);
+        let legacy = Theme::new(&Config::parse("theme_name='cyberdream'").unwrap());
+        assert_eq!(hex(legacy.base), Cyber::DARK.bg);
+        let moon = Theme::new(&Config::parse("[theme]\nname='rose-pine-moon'").unwrap());
+        assert_eq!(hex(moon.base), Moon::Base.rgb());
+        assert_eq!(hex(moon.text), Moon::Text.rgb());
+        assert_eq!(hex(moon.hue(Hue::Yellow)), Moon::Gold.rgb());
     }
 }

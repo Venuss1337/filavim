@@ -2942,6 +2942,17 @@ impl Services {
             }
         }
     }
+    /// Names of the ready language servers attached to the active document.
+    pub fn document_servers(&self, docs: &Documents) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .servers
+            .values()
+            .filter(|s| s.ready && !s.stopped && s.documents.contains_key(&docs.id()))
+            .map(|s| s.config.name.clone())
+            .collect();
+        names.dedup();
+        names
+    }
     pub fn completion_ready(&self, docs: &Documents) -> bool {
         self.servers
             .values()

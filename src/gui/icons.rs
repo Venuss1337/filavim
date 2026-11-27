@@ -23,7 +23,6 @@ pub const HINT: &str = "\u{ea61}";
 pub const CHECK: &str = "\u{eab2}";
 pub const ZAP: &str = "\u{ea86}";
 pub const SEARCH: &str = "\u{ea6d}";
-pub const SERVER: &str = "\u{eb50}";
 pub const SYNC: &str = "\u{ea77}";
 pub const HISTORY: &str = "\u{ea82}";
 pub const EDIT: &str = "\u{ea73}";
@@ -31,6 +30,10 @@ pub const TERMINAL: &str = "\u{ea85}";
 pub const PACKAGE: &str = "\u{eb29}";
 pub const SIGNATURE: &str = "\u{ea8c}";
 pub const DOT: &str = "\u{ea71}";
+/// Git branch (devicons), for the current branch in the status pane.
+pub const BRANCH: &str = "\u{e725}";
+/// Settings gear (codicons), marking attached language servers.
+pub const GEAR: &str = "\u{eb51}";
 
 /// File-type glyph and identity hue. `None` means neutral (secondary text).
 pub fn file(name: &str) -> (&'static str, Option<Hue>) {

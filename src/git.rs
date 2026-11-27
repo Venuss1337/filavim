@@ -116,6 +116,43 @@ impl Default for Service {
         Self { sender, events }
     }
 }
+/// The checked-out branch for the repository containing `start`, read from
+/// `HEAD` without spawning Git (cheap enough for a status line, still blocking
+/// file I/O: call it off the UI thread). Linked worktrees (`.git` files) are
+/// followed; a detached `HEAD` yields its short commit id.
+pub fn head_branch(start: &Path) -> Option<String> {
+    let mut dir = Some(start);
+    while let Some(at) = dir {
+        let dot = at.join(".git");
+        let git_dir = if dot.is_dir() {
+            Some(dot)
+        } else if dot.is_file() {
+            let text = std::fs::read_to_string(&dot).ok()?;
+            let target = text.trim().strip_prefix("gitdir:")?.trim();
+            let target = Path::new(target);
+            Some(if target.is_absolute() {
+                target.to_path_buf()
+            } else {
+                at.join(target)
+            })
+        } else {
+            None
+        };
+        if let Some(git_dir) = git_dir {
+            let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
+            let head = head.trim();
+            return Some(match head.strip_prefix("ref:") {
+                Some(name) => {
+                    let name = name.trim();
+                    name.strip_prefix("refs/heads/").unwrap_or(name).to_owned()
+                }
+                None => head.chars().take(7).collect(),
+            });
+        }
+        dir = at.parent();
+    }
+    None
+}
 fn git(root: &Path, args: &[&str]) -> Result<String> {
     let executable = crate::setup::executable("git")
         .context("Git is missing. Install Git and add it to PATH.")?;
@@ -394,5 +431,28 @@ pub fn execute(job: Job) -> Result<Event> {
             let output = git(&root, &["commit", "-m", &message])?;
             Ok(Event::Message(output))
         }
+    }
+}
+
+#[cfg(test)]
+mod head_tests {
+    use super::head_branch;
+    #[test]
+    fn head_branch_reads_branches_worktrees_and_detached_heads() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(repo.join("src/deep")).unwrap();
+        std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/feat/glass\n").unwrap();
+        assert_eq!(
+            head_branch(&repo.join("src/deep")).as_deref(),
+            Some("feat/glass")
+        );
+        let worktree = temp.path().join("tree");
+        std::fs::create_dir_all(temp.path().join("meta")).unwrap();
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::write(worktree.join(".git"), "gitdir: ../meta\n").unwrap();
+        std::fs::write(temp.path().join("meta/HEAD"), "0123456789abcdef\n").unwrap();
+        assert_eq!(head_branch(&worktree).as_deref(), Some("0123456"));
     }
 }

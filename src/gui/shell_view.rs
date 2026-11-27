@@ -17,7 +17,7 @@
 //! motion (the tab lens and the command lens) uses [`super::super::motion`]
 //! springs and requests frames only while they move.
 use super::{
-    super::{FONT_FAMILY, design::Elevation, icons},
+    super::{FONT_FAMILY, design::Elevation, icons, theme::Hue},
     EditorView, Mode, Request, design, space,
 };
 use gpui::{prelude::*, *};
@@ -398,13 +398,20 @@ impl EditorView {
             .into_any_element()
     }
 
-    /// Footer instrument strip: mode, document identity and feedback on the left;
-    /// search, diagnostics and position on the right. Empty segments are omitted.
+    /// The status pane: a slim pill of glass along the bottom of the window,
+    /// laid out like a Vim statusline in Lucent materials. Left: the mode as a
+    /// lit block, the document (directory, name, unsaved light), the Git branch
+    /// and diagnostics. Middle: command feedback. Right: search position, the
+    /// attached language servers, the cursor position and the window's place in
+    /// the document (`Top`, `Bot`, `All` or a percentage). Empty segments are
+    /// omitted, never zeroed.
     pub(super) fn footer(&self, shell: &design::Shell) -> AnyElement {
         let theme = self.theme;
         let scale = self.scale();
         let e = &self.model.editor;
         let mode = theme.mode(e.mode);
+        let height = f32::from(shell.status.size.height);
+        let block = (height - space::MD).max(scale.small + 6.);
         let (directory, name) = match &e.buffer.path {
             Some(path) => {
                 let shown = design::display_path(path, &self.explorer.root);
@@ -429,7 +436,6 @@ impl EditorView {
                 counts[(d.severity.clamp(1, 4) - 1) as usize] += 1;
             }
         }
-        let attached = counts.iter().any(|c| *c > 0) || self.services.completion_ready(&self.model);
         let search = if e.last_search.is_empty() {
             None
         } else if e.search_error {
@@ -447,28 +453,40 @@ impl EditorView {
                 theme.secondary,
             ))
         };
+        let servers = self.services.document_servers(&self.model);
+        // Vim's window position: where the visible span sits in the document.
+        let lines = e.buffer.text.len_lines().max(1);
+        // `page_height` persists across frames (the row cache may be rebuilding).
+        let rows = e.page_height + 1;
+        let place = if lines <= rows {
+            "All".to_owned()
+        } else if e.top == 0 {
+            "Top".to_owned()
+        } else if e.top + rows >= lines {
+            "Bot".to_owned()
+        } else {
+            format!("{}%", e.top * 100 / (lines - rows))
+        };
         let segment = || div().flex().flex_none().items_center().gap(px(space::XS));
+        let rule = || {
+            div()
+                .flex_none()
+                .w(px(1.))
+                .h(px(block * 0.6))
+                .bg(theme.hairline)
+        };
         let count = |glyph: &'static str, n: usize, color: Hsla| {
             segment()
-                .text_color(if n > 0 { color } else { theme.faint })
-                .child(design::icon(
-                    glyph,
-                    scale.small,
-                    if n > 0 { color } else { theme.faint },
-                ))
+                .text_color(color)
+                .child(design::icon(glyph, scale.small, color))
                 .child(n.to_string())
         };
-        let separator = || div().flex_none().text_color(theme.faint).child("·");
         let message = (!e.message.is_empty() && e.mode != Mode::Command).then(|| {
             segment()
                 .flex_shrink()
                 .min_w(px(0.))
                 .overflow_hidden()
-                .text_color(if e.error {
-                    theme.error
-                } else {
-                    theme.secondary
-                })
+                .text_color(if e.error { theme.error } else { theme.muted })
                 .when(e.error, |d| {
                     d.child(design::icon(icons::ERROR, scale.small, theme.error))
                 })
@@ -481,24 +499,71 @@ impl EditorView {
                         .child(e.message.clone()),
                 )
         });
-        let badge_height = (shell.footer - space::LG).max(scale.small + 6.);
-        div()
-            .id("status-bar")
+        // The mode is a solid block of its own light, like a Vim statusline's.
+        let mode_ink = if theme.light {
+            gpui::white()
+        } else {
+            theme.base
+        };
+        let mode_block = div()
+            .relative()
             .flex()
             .flex_none()
             .items_center()
+            .gap(px(space::SM))
+            .h(px(block))
+            .px(px(space::MD + space::XXS))
+            .rounded(px(block / 2.))
+            .bg(linear_gradient(
+                180.,
+                linear_color_stop(mode, 0.),
+                linear_color_stop(super::super::stage::mix(mode, theme.base, 0.18), 1.),
+            ))
+            .border_1()
+            .border_color(super::super::stage::mix(mode, gpui::white(), 0.35))
+            .shadow(vec![BoxShadow {
+                color: mode.opacity(0.35),
+                offset: point(px(0.), px(0.)),
+                blur_radius: px(10.),
+                spread_radius: px(0.),
+            }])
+            .text_size(px(scale.micro))
+            .font_weight(FontWeight::BOLD)
+            .text_color(mode_ink)
+            .child(design::icon(icons::EDIT, scale.micro, mode_ink))
+            .child(e.mode.label());
+        let place_block = div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .h(px(block))
+            .min_w(px(block * 1.6))
+            .justify_center()
+            .px(px(space::MD))
+            .rounded(px(block / 2.))
+            .bg(mode.opacity(0.14))
+            .border_1()
+            .border_color(mode.opacity(0.4))
+            .text_size(px(scale.micro))
+            .font_weight(FontWeight::BOLD)
+            .text_color(mode)
+            .child(place);
+        div()
+            .id("status-bar")
+            .absolute()
+            .left(shell.status.left())
+            .top(shell.status.top())
+            .w(shell.status.size.width)
+            .h(shell.status.size.height)
+            .flex()
+            .items_center()
             .gap(px(space::LG))
-            .h(px(shell.footer))
-            .pl(px(space::MD + space::XXS))
-            .pr(px(space::XL))
+            .px(px(space::XS))
             .overflow_hidden()
             .text_size(px(scale.small))
             .text_color(theme.secondary)
-            .child(
-                design::badge(e.mode.label(), mode, scale.micro)
-                    .h(px(badge_height))
-                    .font_weight(FontWeight::BOLD),
-            )
+            .occlude()
+            .child(mode_block)
             .child(
                 segment()
                     .flex_shrink()
@@ -533,15 +598,40 @@ impl EditorView {
                     )
                     .when(e.buffer.dirty(), |d| {
                         d.child(
-                            segment()
+                            div()
                                 .ml(px(space::XS))
-                                .text_color(theme.accent)
-                                .child(design::light(theme.accent, 5.))
-                                .child("modified"),
+                                .child(design::light(theme.accent, 6.)),
                         )
                     }),
             )
-            .when_some(message, |d, message| d.child(separator()).child(message))
+            .when_some(self.branch.as_ref().map(|(_, b)| b.clone()), |d, branch| {
+                d.child(rule()).child(
+                    segment()
+                        .text_color(theme.secondary)
+                        .child(design::icon(
+                            icons::BRANCH,
+                            scale.small,
+                            theme.hue(Hue::Purple),
+                        ))
+                        .child(branch),
+                )
+            })
+            .when(counts.iter().any(|c| *c > 0), |d| {
+                d.child(rule()).child(
+                    segment()
+                        .gap(px(space::MD))
+                        .when(counts[0] > 0, |d| {
+                            d.child(count(icons::ERROR, counts[0], theme.error))
+                        })
+                        .when(counts[1] > 0, |d| {
+                            d.child(count(icons::WARNING, counts[1], theme.warning))
+                        })
+                        .when(counts[2] + counts[3] > 0, |d| {
+                            d.child(count(icons::INFO, counts[2] + counts[3], theme.info))
+                        }),
+                )
+            })
+            .when_some(message, |d, message| d.child(rule()).child(message))
             .child(div().flex_1())
             .when_some(search, |d, (text, color)| {
                 d.child(
@@ -550,36 +640,44 @@ impl EditorView {
                         .child(design::icon(icons::SEARCH, scale.small, color))
                         .child(text),
                 )
+                .child(rule())
             })
-            .when(attached, |d| {
+            .when(!servers.is_empty(), |d| {
                 d.child(
                     segment()
-                        .gap(px(space::MD))
-                        // Language intelligence is attached to this document.
-                        .child(design::icon(icons::SERVER, scale.small, theme.muted))
-                        .child(count(icons::ERROR, counts[0], theme.error))
-                        .child(count(icons::WARNING, counts[1], theme.warning))
-                        .when(counts[2] + counts[3] > 0, |d| {
-                            d.child(count(icons::INFO, counts[2] + counts[3], theme.info))
-                        }),
+                        .flex_shrink()
+                        .min_w(px(0.))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .child(design::icon(icons::GEAR, scale.small, theme.accent))
+                        .child(div().text_color(theme.muted).child("LSP ~"))
+                        .child(
+                            div()
+                                .min_w(px(0.))
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .text_color(theme.secondary)
+                                .child(servers.join(", ")),
+                        ),
                 )
+                .child(rule())
             })
             .child(
                 segment()
-                    .gap(px(space::SM))
-                    .child(div().text_color(theme.muted).child("Ln"))
+                    .gap(px(2.))
                     .child(
                         div()
                             .text_color(theme.text)
                             .child((e.buffer.row() + 1).to_string()),
                     )
-                    .child(div().ml(px(space::XS)).text_color(theme.muted).child("Col"))
+                    .child(div().text_color(theme.faint).child(":"))
                     .child(
                         div()
                             .text_color(theme.text)
                             .child((e.buffer.column(e.config.tab_width) + 1).to_string()),
                     ),
             )
+            .child(place_block)
             .into_any_element()
     }
 
@@ -1025,18 +1123,16 @@ impl Render for EditorView {
                 .h(bounds.size.height)
                 .child(self.explorer_panel(f32::from(bounds.size.width), cx))
         });
+        self.refresh_branch(cx);
         let header = self.header(&shell, window, cx);
         let footer = self.footer(&shell);
-        let area = Bounds::new(
-            slab.origin,
-            size(slab.size.width, slab.size.height - px(shell.footer + 1.)),
-        );
+        let area = Bounds::new(slab.origin, slab.size);
         let command = self.command_lens(area, window, cx);
         let welcome = self.welcome();
         let help = self.help_hud();
         let notice = self.manager_notice(cx);
         let theme = self.theme;
-        let panes: Vec<Bounds<Pixels>> = shell.panes().collect();
+        let panes: Vec<Bounds<Pixels>> = shell.panes().into_iter().map(|(_, b)| b).collect();
         let sidebar = shell.sidebar;
         div()
             .relative()
@@ -1156,16 +1252,9 @@ impl Render for EditorView {
                             .children(notice)
                             .children(help)
                             .children(command),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .h(px(1.))
-                            .mx(px(space::XL))
-                            .bg(theme.hairline),
-                    )
-                    .child(footer),
+                    ),
             )
+            .child(footer)
             .child(
                 canvas(
                     move |_, window, cx| {

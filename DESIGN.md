@@ -38,9 +38,10 @@ instrument made of glass, resting in a place.
 
 The **world** is the user's wallpaper, or, when none is set, a procedural night
 lit by soft colored glows. It fills the window and stays visible around and
-between everything else. On it rest **panes** of frosted glass (the explorer and
-the editor) and small **capsules** of glass (identity, tabs, window controls).
-There is no title bar and no status "bar": chrome has dissolved into objects.
+between everything else. On it rest **panes** of frosted glass (the explorer,
+the editor and a slim status pane) and small **capsules** of glass (identity,
+tabs, window controls). There is no title bar and no status "bar" glued to the
+editor: chrome has dissolved into objects.
 
 Three ideas make it Lucent rather than a themed editor:
 
@@ -99,9 +100,8 @@ carry meaning (a glow without state, a gradient without light) does not belong.
  │ › src         │ │   13  │   let x = 1;       ╰──────────────────────────╯ │ │  overview rail
  │   main.rs   ● │ │   14  }                    ╭ results hang from lens ──╮ │ │
  │               │ │                            ╰──────────────────────────╯ │ │
- │               │ │ ───────────────────────────────────────────────────────── │
- │               │ │ ● NORMAL  ⧉ src/main.rs · feedback     ⊗ 0 ⚠ 1  Ln 12 Col 5 │  footer instrument
  ╰───────────────╯ ╰───────────────────────────────────────────────────────────╯
+ ╭(▰ NORMAL) ⧉ src/main.rs ● │  main │ ⊗ 2 ⚠ 1 │ feedback   ⚙ LSP ~ rust  12:5 (Top)╮  status pane
  world ─────────────────────────────────────────────────────────────────────────
 ```
 
@@ -117,6 +117,7 @@ it; never compute pane bounds anywhere else.
 | Panes begin at | `margin + capsule + 8` | |
 | Pane radius | `radius::SLAB` 18 | |
 | Explorer width | user resizable 160–600, clamped to keep the editor ≥ 280 | Drag its right edge |
+| Status pane | full width, `status_bar()` tall (33 at 18 px code), 10 px below the panes | A pill: radius = half its height |
 
 The top row has no bar. Bare world anywhere outside a pane or capsule moves the
 window (double-click zooms); capsules stop that propagation. Windows caption
@@ -404,12 +405,23 @@ edge of the pane resizes it.
   visible span, plus 2 px ticks for search matches (gold) and diagnostics
   (severity; errors win a shared pixel row). Inputs are capped and ticks are
   deduplicated per pixel row.
-- **No end-of-buffer markers**: glass below the last line stays clean.
-- **Footer instrument**: mode chip (light + bold label), file glyph, directory
-  (muted) and name (ink), `modified` with an accent light, then feedback
-  (secondary; errors coral with a glyph). On the right: search position, the server
-  glyph and diagnostic counts when language intelligence is attached, and `Ln`/`Col`
-  with figures in ink.
+- **No end-of-buffer markers or tutorial text**: glass below the last line stays
+  clean, and the editor opens silent; keys live in `F1` help and the docs.
+
+### Status pane
+
+A slim frosted pill along the bottom of the window, separate from the editor pane
+(its own stage material slot), laid out like a Vim statusline in Lucent materials:
+
+- **Left**: the mode as a solid block of its own light (gradient in the mode
+  color, dark ink, bold label, soft glow); the file glyph, directory (muted) and
+  name (ink) with an accent light when unsaved; the Git branch (read from `HEAD`
+  off the UI thread when the project root changes); diagnostic counts, only when
+  non-zero. Segments are separated by short hairline rules.
+- **Middle**: command feedback (`muted`; errors coral with a glyph), truncating.
+- **Right**: search position, `⚙ LSP ~ <servers>` for ready servers attached to
+  the document, `line:column`, and the window's place in the document (`Top`,
+  `Bot`, `All` or a percentage) in a tinted block of the mode color.
 
 ### Floating instruments
 

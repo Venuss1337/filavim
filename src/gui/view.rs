@@ -121,6 +121,10 @@ pub struct EditorView {
     /// notification raised mid-frame would be dropped) and sent only on change.
     stage_layout: Option<(Option<f32>, bool)>,
     stage_mode: Option<Hsla>,
+    /// The project root and its checked-out branch, for the status pane.
+    branch: Option<(PathBuf, String)>,
+    branch_root: Option<PathBuf>,
+    branch_task: Option<Task<()>>,
     bounds: Option<Bounds<Pixels>>,
     cell: Pixels,
     gutter: f32,
@@ -251,6 +255,9 @@ impl EditorView {
             lens_frame: None,
             stage_layout: None,
             stage_mode: None,
+            branch: None,
+            branch_root: None,
+            branch_task: None,
             focus,
             bounds: None,
             cell: px(10.),
@@ -4384,6 +4391,28 @@ impl EditorView {
                 );
             }
         }
+    }
+    /// Reads the project's branch off the UI thread when the root changes.
+    fn refresh_branch(&mut self, cx: &mut Context<Self>) {
+        let root = self.explorer.root.clone();
+        if self.branch_root.as_ref() == Some(&root) {
+            return;
+        }
+        self.branch_root = Some(root.clone());
+        let read = root.clone();
+        let task = cx
+            .background_executor()
+            .spawn(async move { crate::git::head_branch(&read) });
+        self.branch_task = Some(cx.spawn(async move |view, cx| {
+            let branch = task.await;
+            let _ = view.update(cx, |v, cx| {
+                if v.branch_root.as_ref() == Some(&root) {
+                    v.branch = branch.map(|b| (root, b));
+                    v.branch_task = None;
+                    cx.notify();
+                }
+            });
+        }));
     }
     fn toggle_explorer(&mut self) {
         self.explorer.visible = !self.explorer.visible;

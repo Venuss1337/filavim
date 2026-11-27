@@ -103,7 +103,7 @@ impl Editor {
             search_revision: 0,
             search_projected_revision: 0,
             search_error: false,
-            message: "W/A/S/D move · I insert · Ctrl-O open · Ctrl-S save · F1 help.".into(),
+            message: String::new(),
             error: false,
             top: 0,
             left: 0,

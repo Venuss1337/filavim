@@ -60,8 +60,8 @@ pub struct Stage {
     scenery: Option<Scenery>,
     load: Option<Task<()>>,
     generation: u64,
-    /// Indexed like [`Shell::panes`] with the editor last: [explorer, editor].
-    materials: [Material; 2],
+    /// Indexed by the slots of [`Shell::panes`]: explorer, editor, status.
+    materials: [Material; 3],
     clock: Clock,
     light: Motion,
     light_from: Hsla,
@@ -325,17 +325,11 @@ impl Render for Stage {
             window.request_animation_frame();
         }
         let fit = self.settings.fit;
-        let panes: Vec<Bounds<Pixels>> = shell.panes().collect();
-        // Material slots: the explorer bakes into slot 0, the editor into slot 1.
-        let slots: Vec<usize> = if panes.len() == 2 {
-            vec![0, 1]
+        let (slots, panes): (Vec<usize>, Vec<Bounds<Pixels>>) = shell.panes().into_iter().unzip();
+        let focused = if self.explorer_focused && shell.sidebar.is_some() {
+            Shell::EXPLORER
         } else {
-            vec![1]
-        };
-        let focused = if self.explorer_focused && panes.len() == 2 {
-            0
-        } else {
-            panes.len() - 1
+            Shell::EDITOR
         };
         if theme.glass != Glass::Solid
             && let Some(world_atmosphere) = self.scenery.as_ref().map(|s| s.atmosphere)
@@ -421,8 +415,10 @@ impl Render for Stage {
                         spread_radius: px(0.),
                     }],
                 );
-                for (index, (pane, image)) in panes.iter().zip(&baked).enumerate() {
+                for ((slot, pane), image) in slots.iter().zip(&panes).zip(&baked) {
                     let pane = *pane;
+                    // Slim panes (the status pill) round to half their height.
+                    let radius = radius.min(f32::from(pane.size.height) / 2.);
                     // Lift: a broad ambient shadow and a tight contact shadow.
                     window.paint_shadows(
                         pane,
@@ -464,7 +460,10 @@ impl Render for Stage {
                     // answers a mode change at the edge of vision.
                     window.paint_quad(
                         fill(
-                            Bounds::new(pane.origin, gpui::size(pane.size.width, px(56.))),
+                            Bounds::new(
+                                pane.origin,
+                                gpui::size(pane.size.width, px(56f32.min(radius * 2.))),
+                            ),
                             linear_gradient(
                                 180.,
                                 linear_color_stop(theme.sheen, 0.),
@@ -482,7 +481,7 @@ impl Render for Stage {
                         outline(pane, theme.edge, BorderStyle::Solid).corner_radii(corners(radius)),
                     );
                     // Focus is light: only the focused pane's rim takes the mode.
-                    let rim = if index == focused {
+                    let rim = if *slot == focused {
                         mix(
                             theme.rim,
                             light.opacity(theme.rim.a.max(0.5)),

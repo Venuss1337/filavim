@@ -84,8 +84,8 @@ impl Scale {
 /// function so material and content can never disagree.
 ///
 /// The window is a world with glass on it: a row of floating capsules along the
-/// top (no title bar), an optional explorer pane and the editor pane, separated
-/// by a gap of world.
+/// top (no title bar), an optional explorer pane and the editor pane, and a slim
+/// status pane along the bottom, all separated by a gap of world.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Shell {
     /// The capsule row along the top, in window coordinates.
@@ -94,9 +94,10 @@ pub struct Shell {
     pub sidebar: Option<Bounds<Pixels>>,
     /// The editor pane.
     pub slab: Bounds<Pixels>,
+    /// The status pane: a slim pill of glass along the bottom, full width.
+    pub status: Bounds<Pixels>,
     /// World visible around the panes and between them.
     pub margin: f32,
-    pub footer: f32,
     /// Capsule height in the top row.
     pub capsule: f32,
 }
@@ -111,7 +112,8 @@ impl Shell {
         let capsule = scale.control() + space::SM;
         let header = capsule + margin + space::MD;
         let (vw, vh) = (f32::from(viewport.width), f32::from(viewport.height));
-        let height = (vh - header - margin).max(1.);
+        let status = scale.status_bar();
+        let height = (vh - header - margin - status - gap).max(1.);
         let mut left = margin;
         let sidebar = sidebar.map(|width| {
             let width = width
@@ -131,17 +133,25 @@ impl Shell {
                 point(px(left), px(header)),
                 size(px((vw - left - margin).max(1.)), px(height)),
             ),
+            status: Bounds::new(
+                point(px(margin), px(header + height + gap)),
+                size(px((vw - margin * 2.).max(1.)), px(status)),
+            ),
             margin,
-            footer: scale.status_bar(),
             capsule,
         }
     }
-    /// Every glass pane the stage paints, the explorer first.
-    pub fn panes(&self) -> impl Iterator<Item = Bounds<Pixels>> + '_ {
+    /// Material slots for [`Shell::panes`]: explorer, editor, status.
+    pub const EXPLORER: usize = 0;
+    pub const EDITOR: usize = 1;
+    pub const STATUS: usize = 2;
+    /// Every glass pane the stage paints with its material slot.
+    pub fn panes(&self) -> Vec<(usize, Bounds<Pixels>)> {
         self.sidebar
-            .iter()
-            .copied()
-            .chain(std::iter::once(self.slab))
+            .map(|b| (Self::EXPLORER, b))
+            .into_iter()
+            .chain([(Self::EDITOR, self.slab), (Self::STATUS, self.status)])
+            .collect()
     }
 }
 

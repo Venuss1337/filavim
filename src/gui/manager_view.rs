@@ -30,6 +30,7 @@ enum Action {
     Updates,
     Install,
     Remove,
+    Rollback,
     Enable,
     Select,
     Start,
@@ -39,6 +40,8 @@ enum Action {
     Master,
     Custom,
     Source,
+    Downloads,
+    Trust,
     Confirm,
     Cancel,
 }
@@ -120,11 +123,13 @@ impl EditorView {
                     "r" => self.manager_action(Action::Restart, window, cx),
                     "i" => self.manager_action(Action::Install, window, cx),
                     "u" => self.manager_action(Action::Remove, window, cx),
+                    "b" => self.manager_action(Action::Rollback, window, cx),
                     "e" => self.manager_action(Action::Enable, window, cx),
                     "p" => self.manager_action(Action::Select, window, cx),
                     "g" => self.manager_action(Action::Start, window, cx),
                     "x" => self.manager_action(Action::Stop, window, cx),
                     "d" => self.manager_action(Action::Master, window, cx),
+                    "t" => self.manager_action(Action::Trust, window, cx),
                     _ => {}
                 },
                 _ if !k.modifiers.alt && !k.modifiers.platform => {
@@ -166,6 +171,12 @@ impl EditorView {
         let operation = match action {
             Action::Refresh => Some(Operation::Refresh),
             Action::Updates => Some(Operation::CheckUpdates),
+            Action::Trust => {
+                self.manager_ui.confirmation = Some(Operation::TrustWorkspace(
+                    !self.services.manager.snapshot.trusted,
+                ));
+                None
+            }
             Action::Master if !self.model.editor.config.lsp.enabled => {
                 self.setting("lsp.enabled".into(), "true".into(), cx);
                 Some(Operation::Configure {
@@ -189,8 +200,24 @@ impl EditorView {
                         cx.open_url(entry.source);
                         None
                     }
+                    Action::Downloads => {
+                        cx.open_url(&entry.download_page());
+                        None
+                    }
                     Action::Remove => {
                         self.manager_ui.confirmation = Some(Operation::Remove(id));
+                        None
+                    }
+                    Action::Rollback
+                        if self
+                            .services
+                            .manager
+                            .snapshot
+                            .store
+                            .previous
+                            .contains_key(&id) =>
+                    {
+                        self.manager_ui.confirmation = Some(Operation::Rollback(id));
                         None
                     }
                     Action::Enable => Some(Operation::Configure {
@@ -397,6 +424,7 @@ impl EditorView {
                 .cloned()
                 .unwrap_or_default();
             let installed = status.launch.is_some();
+            let previous = self.services.manager.snapshot.store.previous.get(entry.id);
             let mut actions = div()
                 .flex()
                 .flex_wrap()
@@ -440,6 +468,20 @@ impl EditorView {
                 ))
                 .child(self.manager_button("lsp-source", "Project", Action::Source, true, cx))
                 .child(self.manager_button(
+                    "lsp-downloads",
+                    "Downloads",
+                    Action::Downloads,
+                    true,
+                    cx,
+                ))
+                .child(self.manager_button(
+                    "lsp-rollback",
+                    "Roll back",
+                    Action::Rollback,
+                    previous.is_some() && !busy,
+                    cx,
+                ))
+                .child(self.manager_button(
                     "lsp-custom",
                     "Custom executable…",
                     Action::Custom,
@@ -459,6 +501,22 @@ impl EditorView {
                 .child(div().mt(px(8.)).child(entry.notes))
                 .child(div().mt(px(8.)).text_color(self.theme.secondary).child(format!("Languages: {}\nFiles: {}\nRoot markers: {}\nDependencies: {}\nSource: {}\nInstallation: {:?}\nPlatforms: {} / {}\nInstalled version: {}\nLast checked stable version (cached): {}\nOwnership: {}",entry.languages.join(", "),entry.extensions.join(", "),entry.roots.join(", "),entry.runtime,entry.source,entry.method,entry.platforms.join(", "),entry.architectures.join(", "),status.version.as_deref().unwrap_or("Unknown / not installed"),status.available.as_deref().unwrap_or("Not checked · use Check updates"),if status.managed{"Filavim-managed"}else{"External / unavailable (never removed)"})))
                 .child(div().mt(px(10.)).child(actions));
+            if let Some(previous) = previous {
+                details = details.child(div().text_color(self.theme.secondary).child(format!(
+                    "Previous managed version: {} · Ctrl-B to roll back",
+                    previous.version
+                )));
+            }
+            if let Some(origin) = status.origin {
+                use lsp_manager::LaunchOrigin;
+                let source = match origin {
+                    LaunchOrigin::Managed => "Filavim-managed generation",
+                    LaunchOrigin::Configured => "Explicitly configured executable",
+                    LaunchOrigin::Workspace => "Workspace-provided executable",
+                    LaunchOrigin::System => "System executable from PATH",
+                };
+                details = details.child(div().text_color(self.theme.secondary).child(source));
+            }
             if let Some(warning) = &status.dependency_warning {
                 details = details.child(
                     div()
@@ -608,6 +666,17 @@ impl EditorView {
                     .px(px(8.))
                     .children(filters)
                     .child(self.manager_button(
+                        "lsp-trust",
+                        if self.services.manager.snapshot.trusted {
+                            "Revoke project trust"
+                        } else {
+                            "Trust project for LSP"
+                        },
+                        Action::Trust,
+                        !busy && self.services.manager.has_snapshot,
+                        cx,
+                    ))
+                    .child(self.manager_button(
                         "lsp-scope",
                         if self.manager_ui.workspace {
                             "Scope: workspace"
@@ -662,7 +731,7 @@ impl EditorView {
                     )
                     .child(details),
             );
-        panel=panel.child(div().px(px(8.)).py(px(4.)).text_size(px(12.)).text_color(self.theme.secondary).child("Ctrl-I install · Ctrl-U uninstall · Ctrl-E enable · Ctrl-P primary · Ctrl-R restart · Ctrl-G start · Ctrl-X stop · Ctrl-S scope · F6 updates · F7 path"));
+        panel=panel.child(div().px(px(8.)).py(px(4.)).text_size(px(12.)).text_color(self.theme.secondary).child("Ctrl-T trust · Ctrl-I install · Ctrl-U uninstall · Ctrl-E enable · Ctrl-P primary · Ctrl-R restart · Ctrl-G start · Ctrl-X stop · Ctrl-S scope · F6 updates · F7 path"));
         if busy {
             panel = panel.child(
                 div()
@@ -697,6 +766,17 @@ impl EditorView {
                 ),
                 Operation::Remove(id) => format!(
                     "Remove Filavim-managed {id} and its retained generations? External/project executables remain untouched. Stop any other Filavim instance using it first."
+                ),
+                Operation::Rollback(id) => format!(
+                    "Validate and activate the previous managed {id} version? The active version is preserved if validation fails."
+                ),
+                Operation::TrustWorkspace(true) => format!(
+                    "Trust {} for language services? Servers may execute project tools, build scripts or plugins with your permissions.",
+                    self.services.root.display()
+                ),
+                Operation::TrustWorkspace(false) => format!(
+                    "Revoke language-server trust for {}? Running servers for this project will stop.",
+                    self.services.root.display()
                 ),
                 _ => String::new(),
             };

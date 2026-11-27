@@ -237,6 +237,14 @@ pub fn primary(language: &str) -> Option<&'static Entry> {
 }
 
 impl Entry {
+    pub fn download_page(&self) -> String {
+        match self.method {
+            Method::GithubRust | Method::GithubClang => format!("{}/releases", self.source),
+            Method::Npm(package) => format!("https://www.npmjs.com/package/{package}"),
+            Method::Python(package) => format!("https://pypi.org/project/{package}/#files"),
+        }
+    }
+
     pub fn supports_host(&self) -> bool {
         self.supports(std::env::consts::OS, std::env::consts::ARCH)
     }

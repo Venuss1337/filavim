@@ -619,7 +619,11 @@ impl EditorView {
         cx.notify();
         Ok(())
     }
-    /// Explicit bounded real-server smoke mode; mutates only the in-memory fixture.
+    pub(super) fn set_lsp_smoke_storage(&mut self, data: PathBuf) {
+        self.services.manager = crate::lsp_manager::Manager::at(data, self.services.root.clone());
+    }
+
+    /// Explicit bounded real-server smoke mode; trust is stored in temporary test data.
     pub fn lsp_smoke_step(
         &mut self,
         stage: u8,
@@ -645,6 +649,19 @@ impl EditorView {
         };
         match stage {
             0 => {
+                let manager = &mut self.services.manager;
+                if self.model.editor.buffer.path.is_some()
+                    && manager.loaded
+                    && !manager.snapshot.trusted
+                    && !manager.busy
+                {
+                    anyhow::ensure!(
+                        manager.error.is_none(),
+                        "Cannot trust smoke fixture: {:?}",
+                        manager.error
+                    );
+                    manager.submit(crate::lsp_manager::Operation::TrustWorkspace(true));
+                }
                 if self.busy || !self.services.completion_ready(&self.model) {
                     return Ok(0);
                 }
@@ -732,6 +749,12 @@ impl EditorView {
                     p.kind == Kind::Hover && p.rows.iter().any(|r| r.label.contains("Computes"))
                 }) {
                     return Ok(5);
+                }
+                // rust-analyzer can reject the first hover while indexing the
+                // just-accepted completion. Retry only that transient response.
+                if tick.is_multiple_of(5) && self.model.editor.message.contains("-32801") {
+                    self.model.editor.message.clear();
+                    self.command("Hover".into(), window, cx);
                 }
                 Ok(4)
             }

@@ -1,3 +1,5 @@
+#[path = "support/trusted_manager.rs"]
+mod trust;
 use filavim::{
     buffer::Buffer,
     config::Config,
@@ -107,6 +109,7 @@ fn real_rust_analyzer_completion_hover_and_diagnostics() {
     let byte = source.find("widget.com").unwrap() + "widget.com".len();
     d.editor.buffer.cursor = source[..byte].chars().count();
     let mut s = Services::new(temp.path().to_owned());
+    s.manager = trust::trusted_manager(temp.path().join("tools"), temp.path().into());
     s.update(&d);
     wait(
         || {

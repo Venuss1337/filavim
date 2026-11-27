@@ -7,6 +7,9 @@ pub fn tempdir() -> tempfile::TempDir {
     tempfile::tempdir_in(parent).unwrap()
 }
 
+mod trusted_manager;
+pub use trusted_manager::trusted_manager;
+
 pub fn mock_executable(directory: &std::path::Path) -> std::path::PathBuf {
     #[cfg(feature = "test-tools")]
     {

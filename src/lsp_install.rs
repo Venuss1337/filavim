@@ -221,27 +221,35 @@ pub(super) fn install_clang(
     let _ = executable;
     Ok(())
 }
-pub(super) fn existing_node(data: &Path) -> Result<PathBuf> {
+fn existing_node(data: &Path, cancel: &AtomicBool) -> Result<PathBuf> {
     if let Ok((node, _)) = npm()
-        && compatible(&node)
+        && compatible(&node, cancel)
     {
         return Ok(node);
     }
-    let node: PathBuf =
-        serde_json::from_slice(&std::fs::read(data.join("runtimes/node/current.json"))?)?;
+    let parent = data.join("runtimes/node").canonicalize()?;
+    let node: PathBuf = serde_json::from_slice(&std::fs::read(parent.join("current.json"))?)?;
+    let node = node.canonicalize()?;
+    let relative = node
+        .strip_prefix(&parent)
+        .context("Managed Node is outside its runtime directory")?;
     ensure!(
-        compatible(&node),
+        relative.components().next().is_some_and(|part| part
+            .as_os_str()
+            .to_string_lossy()
+            .starts_with("generation-")),
+        "Invalid managed Node generation"
+    );
+    ensure!(
+        compatible(&node, cancel),
         "Managed Node runtime is missing or incompatible"
     );
     Ok(node)
 }
-fn compatible(node: &Path) -> bool {
-    run(
-        command(node, &["--version".into()]),
-        &AtomicBool::new(false),
-        5,
-    )
-    .is_ok_and(|s| {
+fn compatible(node: &Path, cancel: &AtomicBool) -> bool {
+    let mut probe = command(node, &["--version".into()]);
+    probe.env_remove("NODE_OPTIONS").env_remove("NODE_PATH");
+    run(probe, cancel, 5).is_ok_and(|s| {
         let v: Vec<_> = s
             .trim()
             .trim_start_matches('v')
@@ -267,11 +275,12 @@ pub(super) fn node(
     cancel: &AtomicBool,
     report: &impl Fn(&str),
 ) -> Result<(PathBuf, PathBuf)> {
-    if let Ok(node) = existing_node(data)
+    if let Ok(node) = existing_node(data, cancel)
         && let Ok(cli) = npm_cli(&node)
     {
         return Ok((node, cli));
     }
+    check(cancel)?;
     report("Resolving managed Node 24 LTS runtime");
     let releases = json_url("https://nodejs.org/dist/index.json", cancel)?;
     let release = releases
@@ -343,7 +352,7 @@ pub(super) fn node(
     std::fs::remove_file(archive)?;
     let node = find_executable(staging.path(), if zip { "node.exe" } else { "node" })?;
     ensure!(
-        compatible(&node),
+        compatible(&node, cancel),
         "Downloaded Node failed runtime verification"
     );
     let cli = npm_cli(&node)?;

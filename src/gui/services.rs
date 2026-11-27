@@ -120,7 +120,10 @@ struct Server {
     startup: Option<Duration>,
     capabilities: Value,
     failure: Option<String>,
+    retries: usize,
+    retry_at: Option<std::time::Instant>,
 }
+const LSP_RETRY_DELAYS: [Duration; 2] = [Duration::from_millis(250), Duration::from_secs(1)];
 #[derive(Clone)]
 struct Pending {
     id: u64,
@@ -901,6 +904,13 @@ impl Services {
         // Resolution and root-marker scans happen on the manager worker, never here.
         self.manager.set_workspace(&self.root);
         self.manager.observe(paths);
+        if !self.manager.snapshot.trusted {
+            let obsolete: Vec<_> = self.servers.keys().cloned().collect();
+            for key in obsolete {
+                self.stop_instance(&key);
+            }
+            return;
+        }
         if !self.manager.has_snapshot {
             return;
         }
@@ -914,6 +924,14 @@ impl Services {
             let Some(path) = &e.buffer.path else {
                 continue;
             };
+            if !self
+                .manager
+                .snapshot
+                .trusted_paths
+                .contains(&lsp::path_key(path))
+            {
+                continue;
+            }
             let Some(language) = lsp::language(path) else {
                 continue;
             };
@@ -971,6 +989,17 @@ impl Services {
                     self.stop_instance(&key);
                     continue;
                 }
+                let mut retries = 0;
+                if let Some(server) = self.servers.get(&key)
+                    && server.client.stopped.load(Ordering::Acquire)
+                    && server
+                        .retry_at
+                        .is_some_and(|at| at <= std::time::Instant::now())
+                {
+                    retries = server.retries + 1;
+                    self.stop_instance(&key);
+                    self.retiring.remove(&key);
+                }
                 let server = self.servers.entry(key).or_insert_with(|| Server {
                     client: lsp::Client::start(
                         config.clone(),
@@ -990,6 +1019,8 @@ impl Services {
                     startup: None,
                     capabilities: Value::Null,
                     failure: None,
+                    retries,
+                    retry_at: None,
                 });
                 if server.stopped {
                     continue;
@@ -1402,9 +1433,12 @@ impl Services {
                 }
             })
         else {
-            self.message = Some(
-                "Language server unavailable or initializing; use :LspRestart to retry".into(),
-            );
+            let message = if self.manager.has_snapshot && !self.manager.snapshot.trusted {
+                "Trust this project in :LspManager to start language servers"
+            } else {
+                "Language server unavailable or initializing; use :LspRestart to retry"
+            };
+            self.message = Some(message.into());
             return;
         };
         let uri = path.and_then(|p| lsp::uri(p).ok()).unwrap_or_default();
@@ -1533,6 +1567,7 @@ impl Services {
                 Some(
                     crate::lsp_manager::Operation::Install(_)
                         | crate::lsp_manager::Operation::Remove(_)
+                        | crate::lsp_manager::Operation::Rollback(_)
                 )
             ) {
                 if let Some(error) = self.manager.error.clone() {
@@ -1544,6 +1579,9 @@ impl Services {
                         }
                         Some(crate::lsp_manager::Operation::Remove(id)) => {
                             format!("{id} managed installation removed")
+                        }
+                        Some(crate::lsp_manager::Operation::Rollback(id)) => {
+                            format!("Previous managed {id} version activated")
                         }
                         _ => unreachable!(),
                     };
@@ -1570,6 +1608,9 @@ impl Services {
         }
         if changed {
             self.update(docs);
+            if manager_was_busy && !self.manager.busy && self.manager.snapshot.trusted {
+                self.automatic_completion(docs);
+            }
         }
         if let Some(syntax) = &self.syntax {
             for result in syntax.results.try_iter().take(16) {
@@ -1657,6 +1698,23 @@ impl Services {
                     let server = self.servers.get_mut(&key).unwrap();
                     server.stopped = true;
                     server.failure = Some(message.clone());
+                    if server.ready
+                        && server.startup.is_some_and(|startup| {
+                            server.started.elapsed().saturating_sub(startup)
+                                >= Duration::from_secs(60)
+                        })
+                    {
+                        server.retries = 0;
+                    }
+                    if !self.shutting_down
+                        && let Some(delay) = LSP_RETRY_DELAYS.get(server.retries).copied()
+                    {
+                        server.retry_at = Some(std::time::Instant::now() + delay);
+                        std::thread::spawn(move || {
+                            std::thread::sleep(delay);
+                            background::wake();
+                        });
+                    }
                     self.diagnostics.retain(|(server, _), _| server != &key);
                     self.pending.retain(|_, p| p.server != key);
                     if let Some(session) = &mut self.completion {
@@ -2128,6 +2186,14 @@ impl Services {
         }
         if refresh_completion {
             self.request_completion(docs, false);
+        }
+        if self.servers.values().any(|server| {
+            server
+                .retry_at
+                .is_some_and(|at| at <= std::time::Instant::now())
+        }) {
+            self.update(docs);
+            changed = true;
         }
         changed
     }
@@ -3009,7 +3075,9 @@ impl Services {
                 root: s.root.clone(),
                 command: s.config.command.clone(),
                 args: s.config.args.clone(),
-                state: if s.failure.is_some() {
+                state: if s.retry_at.is_some() {
+                    "Retry scheduled"
+                } else if s.failure.is_some() {
                     "Failed"
                 } else if s.stopped || s.client.stopped.load(Ordering::Acquire) {
                     "Stopped"
@@ -3587,6 +3655,10 @@ mod tests {
         let mut s = Services::new(temp.path().into());
         s.manager =
             crate::lsp_manager::Manager::at(temp.path().join("manager"), temp.path().into());
+        assert!(
+            s.manager
+                .submit(crate::lsp_manager::Operation::TrustWorkspace(true))
+        );
         for (index, (source, expected)) in [
             ("type Config = { name: str§ }", "string"),
             (

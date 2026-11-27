@@ -639,7 +639,7 @@ fn mock_services(root: &Path, value: &Value) -> (Documents, Services, PathBuf, P
     std::fs::write(&path, "value").unwrap();
     tracked(&mut d, &path);
     let mut s = Services::new(root.into());
-    s.manager = filavim::lsp_manager::Manager::at(root.join("tools"), root.into());
+    s.manager = support::trusted_manager(root.join("tools"), root.into());
     s.update(&d);
     until(|| {
         s.poll(&mut d);
@@ -726,9 +726,13 @@ fn client_action_and_duplicate_server_request_apply_once_and_remap_uris() {
     });
     s.update(&d);
     until(|| {
-        std::fs::read_to_string(&log)
-            .unwrap()
-            .contains(&format!("\"uri\":\"{}\"", uri(&renamed)))
+        s.poll(&mut d);
+        std::fs::read_to_string(&log).unwrap().lines().any(|line| {
+            serde_json::from_str::<Value>(line).is_ok_and(|message| {
+                message["method"] == "textDocument/didOpen"
+                    && message["params"]["textDocument"]["uri"] == uri(&renamed)
+            })
+        })
     });
     assert_eq!(wire_response(&log).unwrap()["result"]["applied"], true);
     assert_eq!(d.id(), id);
@@ -950,7 +954,7 @@ fn real_rust_analyzer_create_module_resource_action() {
     let id = tracked(&mut d, &path);
     d.editor.buffer.cursor = 4;
     let mut s = Services::new(temp.path().into());
-    s.manager = filavim::lsp_manager::Manager::at(temp.path().join("tools"), temp.path().into());
+    s.manager = support::trusted_manager(temp.path().join("tools"), temp.path().into());
     s.update(&d);
     until(|| {
         s.poll(&mut d);
@@ -1379,7 +1383,7 @@ fn catalog_rename_reuses_the_running_process_during_asynchronous_path_resolution
     let mut d = Documents::new(Model::new(config).unwrap());
     let id = tracked(&mut d, &from);
     let mut s = Services::new(root.into());
-    s.manager = filavim::lsp_manager::Manager::at(tools, root.into());
+    s.manager = support::trusted_manager(tools, root.into());
     until(|| {
         s.update(&d);
         s.poll(&mut d);

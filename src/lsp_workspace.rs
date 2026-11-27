@@ -42,7 +42,7 @@ fn unsafe_link(metadata: &std::fs::Metadata) -> bool {
         metadata.file_type().is_symlink()
     }
 }
-fn directory_identity(path: &Path) -> Result<Option<[u64; 2]>> {
+pub(crate) fn directory_identity(path: &Path) -> Result<Option<[u64; 2]>> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     #[cfg(windows)]

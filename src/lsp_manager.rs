@@ -59,8 +59,10 @@ pub struct CachedVersion {
 pub struct Store {
     pub latest: BTreeMap<String, CachedVersion>,
     pub installed: BTreeMap<String, Installation>,
+    pub previous: BTreeMap<String, Installation>,
     pub global: Preferences,
     pub workspaces: BTreeMap<String, Preferences>,
+    pub trusted_workspaces: BTreeMap<String, [u64; 2]>,
 }
 impl Store {
     pub fn preferences(&self, workspace: &Path) -> Preferences {
@@ -90,6 +92,15 @@ pub struct Status {
     pub available: Option<String>,
     pub warning: Option<String>,
     pub dependency_warning: Option<String>,
+    pub origin: Option<LaunchOrigin>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LaunchOrigin {
+    Managed,
+    Configured,
+    Workspace,
+    System,
 }
 impl Status {
     pub fn update_available(&self) -> bool {
@@ -113,6 +124,8 @@ pub struct Snapshot {
     pub statuses: BTreeMap<String, Status>,
     pub resolved: BTreeMap<String, Vec<Resolved>>,
     pub missing: BTreeSet<String>,
+    pub trusted: bool,
+    pub trusted_paths: BTreeSet<String>,
 }
 #[derive(Clone, Debug)]
 pub enum Change {
@@ -128,7 +141,9 @@ pub enum Operation {
     Refresh,
     CheckUpdates,
     Install(String),
+    Rollback(String),
     Remove(String),
+    TrustWorkspace(bool),
     Configure { workspace: bool, change: Change },
 }
 enum Event {
@@ -205,6 +220,8 @@ impl Manager {
             self.has_snapshot = false;
             self.snapshot.resolved.clear();
             self.snapshot.missing.clear();
+            self.snapshot.trusted = false;
+            self.snapshot.trusted_paths.clear();
             self.refresh_needed = true;
         }
     }
@@ -230,6 +247,7 @@ impl Manager {
         self.operation = Some(operation.clone());
         self.progress = match &operation {
             Operation::Install(id) => format!("Installing / updating {id}"),
+            Operation::Rollback(id) => format!("Validating previous {id} installation"),
             Operation::Remove(id) => format!("Removing managed {id}"),
             _ => "Resolving tools and settings".into(),
         };
@@ -326,9 +344,11 @@ fn save(data: &Path, store: &Store) -> Result<()> {
     Ok(())
 }
 fn tool(name: &str) -> Result<PathBuf> {
-    crate::setup::executable(name).with_context(|| {
-        format!("Missing dependency: {name}. Install it and reopen the manager / Refresh.")
-    })
+    crate::setup::executable(name)
+        .filter(|path| path.is_absolute())
+        .with_context(|| {
+            format!("Missing dependency: {name}. Install it and reopen the manager / Refresh.")
+        })
 }
 fn command(program: &Path, args: &[String]) -> Command {
     let mut c = Command::new(program);
@@ -786,7 +806,10 @@ fn install(
                 serde_json::to_vec(&node)?,
             )?;
             let mut check_node = Command::new(&node);
-            check_node.arg("--version");
+            check_node
+                .arg("--version")
+                .env_remove("NODE_OPTIONS")
+                .env_remove("NODE_PATH");
             let node_version = run(check_node, cancel, 5)?;
             ensure!(
                 node_version
@@ -1008,10 +1031,18 @@ fn install(
             source: entry.source.into(),
         },
     );
+    let previous = old
+        .as_ref()
+        .and_then(|old| store.previous.insert(entry.id.into(), old.clone()));
     if let Err(e) = save(data, store) {
         let _ = std::fs::remove_dir_all(&directory);
         if let Some(old) = old {
             store.installed.insert(entry.id.into(), old);
+            if let Some(previous) = previous {
+                store.previous.insert(entry.id.into(), previous);
+            } else {
+                store.previous.remove(entry.id);
+            }
         } else {
             store.installed.remove(entry.id);
         }
@@ -1029,7 +1060,7 @@ fn resolve(
     prefs: &Preferences,
     cancel: &AtomicBool,
 ) -> Status {
-    let result = (|| -> Result<(Launch, String, bool)> {
+    let result = (|| -> Result<(Launch, String, LaunchOrigin)> {
         ensure!(
             entry.supports_host(),
             "Unsupported OS/architecture for this catalog entry"
@@ -1039,7 +1070,7 @@ fn resolve(
             return Ok((
                 custom.clone(),
                 "Custom executable (version not probed)".into(),
-                false,
+                LaunchOrigin::Configured,
             ));
         }
         // Project-local tools are never modified or removed by the manager.
@@ -1062,12 +1093,12 @@ fn resolve(
                 );
             }
             launch.args.extend(entry.args.iter().map(|s| s.to_string()));
-            return Ok((launch, v, false));
+            return Ok((launch, v, LaunchOrigin::Workspace));
         }
         if let Some(i) = store.installed.get(entry.id) {
             safe_directory(data, entry.id, &i.directory)?;
             validate_launch(&i.launch)?;
-            return Ok((i.launch.clone(), i.version.clone(), true));
+            return Ok((i.launch.clone(), i.version.clone(), LaunchOrigin::Managed));
         }
         if matches!(entry.method, Method::Python(_)) {
             for environment in [".venv", "venv"] {
@@ -1083,7 +1114,7 @@ fn resolve(
                     };
                     let v = detect_version(entry, None, &launch, cancel)?;
                     launch.args.extend(entry.args.iter().map(|s| s.to_string()));
-                    return Ok((launch, v, false));
+                    return Ok((launch, v, LaunchOrigin::Workspace));
                 }
             }
         }
@@ -1131,16 +1162,22 @@ fn resolve(
             );
         }
         launch.args.extend(entry.args.iter().map(|s| s.to_string()));
-        Ok((launch, v, false))
+        Ok((launch, v, LaunchOrigin::System))
     })();
     match result {
-        Ok((launch, version, managed)) => Status {
+        Ok((launch, version, origin)) => Status {
             launch: Some(launch),
             version: Some(version),
-            managed,
+            managed: origin == LaunchOrigin::Managed,
+            origin: Some(origin),
             ..Status::default()
         },
         Err(e) => Status {
+            managed: store.installed.contains_key(entry.id),
+            version: store
+                .installed
+                .get(entry.id)
+                .map(|receipt| receipt.version.clone()),
             warning: Some(format!("{e:#}")),
             ..Status::default()
         },
@@ -1185,36 +1222,65 @@ fn scan(
     cancel: &AtomicBool,
 ) -> Result<Snapshot> {
     let prefs = store.preferences(workspace);
+    let canonical_workspace = workspace.canonicalize().ok();
+    let trusted = canonical_workspace.as_ref().is_some_and(|root| {
+        let key = crate::lsp::path_key(root);
+        store.trusted_workspaces.get(&key).is_some_and(|expected| {
+            crate::lsp::workspace::directory_identity(root)
+                .is_ok_and(|identity| identity == Some(*expected))
+        })
+    });
     let mut snapshot = Snapshot {
         store: store.clone(),
+        trusted,
         ..Snapshot::default()
     };
     for entry in lsp_catalog::CATALOG {
         check(cancel)?;
-        let mut status = resolve(entry, workspace, data, &store, &prefs, cancel);
-        status.dependency_warning = match entry.method {
-            Method::Npm(_) => None,
-            Method::Python(_) => python()
-                .err()
-                .map(|e| format!("Installation dependency: {e:#}")),
-            Method::GithubClang => None,
-            Method::GithubRust => {
-                if crate::setup::executable("curl").is_none() {
-                    Some("curl is required for official release downloads".into())
-                } else if crate::setup::executable("cargo").is_none() {
-                    Some(
-                        "Cargo/Rust toolchain is unavailable; project analysis will be limited"
-                            .into(),
-                    )
-                } else {
-                    None
+        let mut status = if trusted {
+            resolve(entry, workspace, data, &store, &prefs, cancel)
+        } else {
+            untrusted_status(entry, data, &store)
+        };
+        status.dependency_warning = if trusted {
+            match entry.method {
+                Method::Npm(_) => None,
+                Method::Python(_) => python()
+                    .err()
+                    .map(|e| format!("Installation dependency: {e:#}")),
+                Method::GithubClang => None,
+                Method::GithubRust => {
+                    if crate::setup::executable("curl").is_none() {
+                        Some("curl is required for official release downloads".into())
+                    } else if crate::setup::executable("cargo").is_none() {
+                        Some(
+                            "Cargo/Rust toolchain is unavailable; project analysis will be limited"
+                                .into(),
+                        )
+                    } else {
+                        None
+                    }
                 }
             }
+        } else {
+            None
         };
         status.available = store.latest.get(entry.id).map(|v| v.version.clone());
         snapshot.statuses.insert(entry.id.into(), status);
     }
+    let Some(workspace_root) = canonical_workspace.filter(|_| trusted) else {
+        return Ok(snapshot);
+    };
+    let workspace_root = PathBuf::from(crate::paths::display_path(&workspace_root));
     for path in paths {
+        let Ok(canonical_path) = crate::files::resolve_path(path) else {
+            continue;
+        };
+        let canonical_path = PathBuf::from(crate::paths::display_path(&canonical_path));
+        if crate::lsp::workspace::relative_path(&canonical_path, &workspace_root).is_none() {
+            continue;
+        }
+        snapshot.trusted_paths.insert(crate::lsp::path_key(path));
         let Some(language) = crate::lsp::language(path) else {
             continue;
         };
@@ -1222,8 +1288,13 @@ fn scan(
             .iter()
             .filter(|e| selected_for(e, language, &prefs))
         {
-            let root = lsp_catalog::root(path, entry);
-            let status = if root == workspace {
+            let root = lsp_catalog::root(&canonical_path, entry);
+            let root = if crate::lsp::workspace::relative_path(&root, &workspace_root).is_some() {
+                root
+            } else {
+                workspace_root.clone()
+            };
+            let status = if crate::lsp::path_key(&root) == crate::lsp::path_key(workspace) {
                 snapshot.statuses[entry.id].clone()
             } else {
                 resolve(entry, &root, data, &store, &prefs, cancel)
@@ -1265,6 +1336,22 @@ fn scan(
     }
     Ok(snapshot)
 }
+
+fn untrusted_status(entry: &Entry, data: &Path, store: &Store) -> Status {
+    let Some(installation) = store.installed.get(entry.id) else {
+        return Status::default();
+    };
+    let valid = safe_directory(data, entry.id, &installation.directory)
+        .and_then(|()| validate_launch(&installation.launch));
+    Status {
+        launch: valid.is_ok().then(|| installation.launch.clone()),
+        version: Some(installation.version.clone()),
+        managed: true,
+        origin: Some(LaunchOrigin::Managed),
+        warning: valid.err().map(|error| format!("{error:#}")),
+        ..Status::default()
+    }
+}
 fn execute(
     data: &Path,
     workspace: &Path,
@@ -1293,6 +1380,21 @@ fn execute(
     };
     let mut store = load(data)?;
     match operation {
+        Operation::TrustWorkspace(trusted) => {
+            let root = workspace
+                .canonicalize()
+                .context("Cannot resolve workspace to set trust")?;
+            ensure!(root.is_dir(), "Only a project directory can be trusted");
+            let key = crate::lsp::path_key(&root);
+            if trusted {
+                let identity = crate::lsp::workspace::directory_identity(&root)?
+                    .context("Workspace directory identity is unavailable")?;
+                store.trusted_workspaces.insert(key, identity);
+            } else {
+                store.trusted_workspaces.remove(&key);
+            }
+            save(data, &store)?;
+        }
         Operation::Install(id) => install(
             data,
             lsp_catalog::entry(&id).context("Unknown server")?,
@@ -1300,6 +1402,25 @@ fn execute(
             cancel,
             report,
         )?,
+        Operation::Rollback(id) => {
+            let entry = lsp_catalog::entry(&id).context("Unknown server")?;
+            let previous = store
+                .previous
+                .get(&id)
+                .cloned()
+                .context("No previous managed installation")?;
+            safe_directory(data, &id, &previous.directory)?;
+            validate_launch(&previous.launch)?;
+            report("Checking the previous version in an empty temporary workspace");
+            probe(entry, &previous.launch, cancel)?;
+            check(cancel)?;
+            let active = store
+                .installed
+                .insert(id.clone(), previous)
+                .context("No active managed installation")?;
+            store.previous.insert(id, active);
+            save(data, &store)?;
+        }
         Operation::Remove(id) => {
             let i = store
                 .installed
@@ -1323,6 +1444,7 @@ fn execute(
                 }
             }
             store.installed.remove(&id);
+            store.previous.remove(&id);
             save(data, &store)?;
         }
         Operation::Configure {
@@ -1469,6 +1591,139 @@ fn probe(entry: &Entry, launch: &Launch, cancel: &AtomicBool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    fn real_editor_navigation(
+        services: &mut crate::gui::services::Services,
+        docs: &mut crate::gui::documents::Documents,
+        id: &str,
+        capabilities: &Value,
+    ) {
+        use crate::gui::services::Kind;
+        let source = match id {
+            "rust-analyzer" => {
+                "fn greet(value:i32)->i32{value+1}\nfn main(){let _result=greet(1);}\n"
+            }
+            "clangd" => "int greet(int value){return value+1;}\nint main(){return greet(1);}\n",
+            "typescript-language-server" => {
+                "function greet(value:number){return value+1;}\nconst result=greet(1);\n"
+            }
+            "pyright" => "def greet(value: int) -> int:\n    return value+1\nresult=greet(1)\n",
+            "json-language-server" => "{\"$schema\":\"./schema.json\",\"property\":\"name\"}\n",
+            _ => return,
+        };
+        let path = docs.editor.buffer.path.clone().unwrap();
+        let disk = std::fs::read(&path).unwrap();
+        docs.editor.snippet = None;
+        docs.editor.set_mode(crate::editor::Mode::Normal);
+        let end = docs.editor.buffer.text.len_chars();
+        docs.editor.buffer.replace(0..end, source);
+        let symbol = if id == "json-language-server" {
+            "property"
+        } else {
+            "greet"
+        };
+        let symbol_at = source.rfind(symbol).unwrap();
+
+        for (capability, kind, position, params) in [
+            ("hoverProvider", Kind::Hover, symbol_at + 1, None),
+            (
+                "signatureHelpProvider",
+                Kind::Signature,
+                symbol_at + symbol.len() + 1,
+                None,
+            ),
+            ("referencesProvider", Kind::References, symbol_at + 1, None),
+            (
+                "documentSymbolProvider",
+                Kind::DocumentSymbols,
+                symbol_at + 1,
+                None,
+            ),
+            (
+                "workspaceSymbolProvider",
+                Kind::WorkspaceSymbols,
+                symbol_at + 1,
+                Some(json!({"query":symbol})),
+            ),
+            (
+                "renameProvider",
+                Kind::Rename,
+                symbol_at + 1,
+                Some(json!({"newName":"welcome"})),
+            ),
+            ("documentFormattingProvider", Kind::Formatting, 0, None),
+        ] {
+            if capabilities[capability].is_null() || capabilities[capability] == false {
+                continue;
+            }
+            services.dismiss();
+            docs.editor.buffer.cursor = position;
+            services.update(docs);
+            let deadline = Instant::now() + Duration::from_secs(8);
+            let mut next_request = Instant::now();
+            let verified = loop {
+                services.poll(docs);
+                if services.panel.as_ref().is_some_and(|p| {
+                    p.kind == kind
+                        && p.rows
+                            .iter()
+                            .any(|row| !row.label.is_empty() && row.label != "No information")
+                }) {
+                    break true;
+                }
+                let now = Instant::now();
+                if now >= deadline {
+                    break false;
+                }
+                if now >= next_request {
+                    services.request(docs, kind, params.clone());
+                    next_request = now + Duration::from_millis(500);
+                }
+                std::thread::sleep(Duration::from_millis(15));
+            };
+            if !verified {
+                eprintln!(
+                    "REAL EXTENDED {id} {}: advertised, no usable result for this fixture ({:?})",
+                    kind.method(),
+                    services.message
+                );
+                continue;
+            }
+            if matches!(kind, Kind::Rename | Kind::Formatting) {
+                let revision = docs.editor.buffer.revision;
+                services.accept(docs);
+                let deadline = Instant::now() + Duration::from_secs(8);
+                while services.workspace_active() && Instant::now() < deadline {
+                    services.poll(docs);
+                    std::thread::sleep(Duration::from_millis(15));
+                }
+                assert!(
+                    !services.workspace_active(),
+                    "{id}: {} edit did not settle",
+                    kind.method()
+                );
+                if docs.editor.buffer.revision == revision {
+                    eprintln!(
+                        "REAL EXTENDED {id} {}: no buffer change ({:?})",
+                        kind.method(),
+                        services.message
+                    );
+                    continue;
+                }
+                if kind == Kind::Rename {
+                    assert_eq!(
+                        docs.editor.buffer.text.to_string(),
+                        source.replace("greet", "welcome")
+                    );
+                }
+                assert_eq!(std::fs::read(&path).unwrap(), disk);
+                docs.editor.buffer.undo();
+                assert_eq!(docs.editor.buffer.text.to_string(), source);
+            }
+            eprintln!("REAL EXTENDED {id} {}: verified", kind.method());
+        }
+    }
     fn real_editor_completion(
         data: &Path,
         workspace: &Path,
@@ -1514,6 +1769,15 @@ mod tests {
         docs.editor.buffer.cursor = text.chars().count();
         let mut services = Services::new(workspace.into());
         services.manager = Manager::at(data.into(), workspace.into());
+        execute(
+            data,
+            workspace,
+            &BTreeSet::new(),
+            Operation::TrustWorkspace(true),
+            &AtomicBool::new(false),
+            &|_| {},
+        )
+        .unwrap();
         let started = Instant::now();
         let mut request = Instant::now() - Duration::from_secs(2);
         loop {
@@ -1644,7 +1908,55 @@ mod tests {
                     std::thread::sleep(Duration::from_millis(20));
                 }
                 eprintln!("REAL EDITOR {id}: definition navigation returned a location");
+            } else {
+                eprintln!("REAL EDITOR {id}: definition unsupported");
             }
+            let runtime = services.runtime(id);
+            let caps = &runtime
+                .iter()
+                .find(|server| server.state == "Running")
+                .unwrap()
+                .capabilities;
+            for capability in [
+                "hoverProvider",
+                "signatureHelpProvider",
+                "referencesProvider",
+                "documentSymbolProvider",
+                "workspaceSymbolProvider",
+                "documentFormattingProvider",
+                "renameProvider",
+                "codeActionProvider",
+            ] {
+                let advertised = !caps[capability].is_null() && caps[capability] != false;
+                eprintln!(
+                    "REAL CAPABILITY {id} {capability}: {}",
+                    if advertised {
+                        "advertised, behavior not exercised"
+                    } else {
+                        "unsupported"
+                    }
+                );
+            }
+            real_editor_navigation(&mut services, &mut docs, id, caps);
+            services.control(id, false, false);
+            services.update(&docs);
+            assert!(services.runtime(id).is_empty());
+            services.control(id, true, false);
+            let restart_started = Instant::now();
+            while !services
+                .runtime(id)
+                .iter()
+                .any(|server| server.state == "Running")
+            {
+                services.poll(&mut docs);
+                services.update(&docs);
+                assert!(
+                    restart_started.elapsed() < Duration::from_secs(20),
+                    "{id}: did not restart"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            eprintln!("REAL EDITOR {id}: stopped and restarted");
         }
         if id == "basedpyright" {
             let start = Instant::now();
@@ -2065,7 +2377,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             workspace.join("schema.json"),
-            r#"{"type":"object","properties":{"property":{"type":"string"}}}"#,
+            r#"{"type":"object","properties":{"property":{"type":"string","description":"Name shown in the fixture"}}}"#,
         )
         .unwrap();
         for (id, file, text, expected) in [

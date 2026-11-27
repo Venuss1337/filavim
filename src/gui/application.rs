@@ -43,7 +43,7 @@ impl Render for NativeWindow {
     }
 }
 pub fn run(path: Option<PathBuf>, config: crate::config::Config) -> anyhow::Result<()> {
-    run_inner(path, config, None, false)
+    run_inner(path, config, None, None)
 }
 /// Bounded native startup/paint/idle smoke test; never edits or saves the fixture.
 pub fn smoke(path: PathBuf, report: PathBuf) -> anyhow::Result<()> {
@@ -64,7 +64,7 @@ pub fn smoke(path: PathBuf, report: PathBuf) -> anyhow::Result<()> {
             config
         },
         Some(report.clone()),
-        false,
+        None,
     )?;
     let text = std::fs::read_to_string(report)?;
     anyhow::ensure!(
@@ -83,7 +83,13 @@ pub fn smoke_lsp(path: PathBuf, report: PathBuf) -> anyhow::Result<()> {
     let mut config = crate::config::Config::default();
     config.lsp.servers.retain(|s| s.name == "rust");
     config.lsp.servers[0].initialization_options = serde_json::json!({"checkOnSave":false,"cargo":{"buildScripts":{"enable":false}},"procMacro":{"enable":false}});
-    run_inner(Some(path), config, Some(report.clone()), true)?;
+    let tools = tempfile::tempdir()?;
+    run_inner(
+        Some(path),
+        config,
+        Some(report.clone()),
+        Some(tools.path().into()),
+    )?;
     let text = std::fs::read_to_string(report)?;
     anyhow::ensure!(text.contains("real_lsp_popup_smoke=PASS"), "{text}");
     Ok(())
@@ -92,7 +98,7 @@ fn run_inner(
     path: Option<PathBuf>,
     config: crate::config::Config,
     report: Option<PathBuf>,
-    lsp_smoke: bool,
+    lsp_smoke_tools: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     let model = model::Model::new(config)?;
     let failure = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -116,6 +122,7 @@ fn run_inner(
         })
         .detach();
         let bounds = Bounds::centered(None, size(px(1100.), px(740.)), cx);
+        let lsp_smoke = lsp_smoke_tools.is_some();
         let result = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -135,6 +142,9 @@ fn run_inner(
                 });
                 editor.update(cx, |view, cx| {
                     view.focus(window, cx);
+                    if let Some(data) = lsp_smoke_tools {
+                        view.set_lsp_smoke_storage(data);
+                    }
                     if let Some(path) = path {
                         view.open_initial(path, cx);
                     }

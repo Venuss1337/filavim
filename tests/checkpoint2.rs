@@ -211,6 +211,7 @@ fn native_lsp_mock_diagnostics_completion_and_stale_response() {
     std::fs::write(&path, "v").unwrap();
     add(&mut d, &path, "v");
     let mut s = Services::new(temp.path().to_owned());
+    s.manager = support::trusted_manager(temp.path().join("tools"), temp.path().into());
     s.update(&d);
     until(|| {
         s.poll(&mut d);
@@ -395,7 +396,7 @@ fn completion_dynamic_readiness_and_ts_js_contexts_reach_the_popup() {
     d.editor.buffer.cursor = d.editor.buffer.text.len_chars();
     d.editor.set_mode(filavim::editor::Mode::Insert);
     let mut s = Services::new(temp.path().to_owned());
-    s.manager = filavim::lsp_manager::Manager::at(temp.path().join("manager"), temp.path().into());
+    s.manager = support::trusted_manager(temp.path().join("manager"), temp.path().into());
     s.update(&d);
     // No new keypress: registration after initialize must trigger the existing prefix.
     until(|| {
@@ -469,8 +470,7 @@ fn completion_recovers_coalesced_typing_after_empty_error_and_out_of_order_repli
         add(&mut d, &temp.path().join("recover.rs"), "");
         d.editor.set_mode(filavim::editor::Mode::Insert);
         let mut s = Services::new(temp.path().to_owned());
-        s.manager =
-            filavim::lsp_manager::Manager::at(temp.path().join("manager"), temp.path().into());
+        s.manager = support::trusted_manager(temp.path().join("manager"), temp.path().into());
         s.update(&d);
         until(|| {
             s.poll(&mut d);
@@ -549,6 +549,7 @@ fn completion_sessions_publish_progressively_rebase_and_cancel_across_documents(
     let first = add(&mut d, &temp.path().join("a.rs"), "");
     d.editor.set_mode(filavim::editor::Mode::Insert);
     let mut s = Services::new(temp.path().to_owned());
+    s.manager = support::trusted_manager(temp.path().join("tools"), temp.path().into());
     s.update(&d);
     until(|| {
         s.poll(&mut d);
@@ -680,8 +681,7 @@ fn native_resolved_actions_run_commands_only_after_validated_edits() {
     std::fs::write(&path, "value").unwrap();
     add(&mut docs, &path, "value");
     let mut services = Services::new(temp.path().into());
-    services.manager =
-        filavim::lsp_manager::Manager::at(temp.path().join("tools"), temp.path().into());
+    services.manager = support::trusted_manager(temp.path().join("tools"), temp.path().into());
     services.update(&docs);
     until(|| {
         services.poll(&mut docs);

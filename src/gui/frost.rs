@@ -295,9 +295,9 @@ pub fn atmosphere(width: usize, height: usize, top: Rgba, bottom: Rgba, glows: &
                 let dy = v - glow.center.1;
                 let falloff = (-(dx * dx + dy * dy) / (glow.radius * glow.radius)).exp();
                 let weight = falloff * glow.color.0[3];
-                for c in 0..3 {
+                for (channel, light) in color.iter_mut().zip(glow.color.0) {
                     // Screen blend: lights add without clipping to white.
-                    color[c] = 1. - (1. - color[c]) * (1. - glow.color.0[c] * weight);
+                    *channel = 1. - (1. - *channel) * (1. - light * weight);
                 }
             }
             let grain = noise(x as u32 ^ 0x5bd1, y as u32) * 3. / 255.;

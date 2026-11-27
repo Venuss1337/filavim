@@ -425,8 +425,8 @@ impl Theme {
             } else {
                 white.opacity(0.20)
             },
-            hover: ink.opacity(if light { 0.06 } else { 0.06 }),
-            pressed: ink.opacity(if light { 0.10 } else { 0.10 }),
+            hover: ink.opacity(0.06),
+            pressed: ink.opacity(0.10),
             hairline: ink.opacity(if light { 0.10 } else { 0.08 }),
             scrim: color(s.night).opacity(if light { 0.35 } else { 0.50 }),
             shadow: black.opacity(if light { 0.16 } else { 0.55 }),

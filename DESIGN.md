@@ -20,6 +20,15 @@ document.
 Engineering boundaries (input latency, ownership, coordinate units) live in
 [AGENTS.md](AGENTS.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+![Lucent Dark over the procedural atmosphere](docs/images/lucent-dark.jpg)
+
+| Lucent Light | Welcome |
+|---|---|
+| ![Lucent Light](docs/images/lucent-light.jpg) | ![Welcome](docs/images/lucent-welcome.jpg) |
+
+These captures use the built-in atmosphere (no wallpaper configured), so they
+show exactly what a fresh install looks like.
+
 ---
 
 ## 1. The idea: glass in a lit world

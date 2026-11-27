@@ -594,9 +594,7 @@ impl EditorView {
     ) -> Option<AnyElement> {
         let line = self.line_height();
         let height = line + space::LG * 2. - 4.;
-        let width = (f32::from(area.size.width) - space::XXXL * 3.)
-            .min(760.)
-            .max(260.);
+        let width = (f32::from(area.size.width) - space::XXXL * 3.).clamp(260., 760.);
         let left = ((f32::from(area.size.width) - width) / 2.).max(space::MD);
         self.lens_frame = Some(Bounds::new(
             area.origin + point(px(left), px(space::XL)),

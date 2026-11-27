@@ -404,6 +404,7 @@ impl EditorView {
                     meta.push("installing…");
                 }
                 design::row(&theme, ("lsp-entry", index), selected)
+                    .flex_shrink_0()
                     .py(px(space::SM))
                     .items_start()
                     .text_color(if selected { theme.text } else { theme.secondary })
@@ -444,16 +445,14 @@ impl EditorView {
                     })
             })
             .collect::<Vec<_>>();
+        // Content is a non-shrinking column inside the scroll container, so its
+        // sections keep their height when banners reduce the visible area.
         let mut details = div()
-            .id("lsp-details")
-            .flex_1()
-            .min_w(px(0.))
-            .overflow_y_scroll()
-            .track_scroll(&self.manager_ui.scroll)
-            .p(px(space::XL))
             .flex()
+            .flex_none()
             .flex_col()
-            .gap(px(space::XL));
+            .gap(px(space::XL))
+            .p(px(space::XL));
         if let Some(entry) = entries.get(self.manager_ui.selected) {
             let status = self
                 .services
@@ -1087,7 +1086,15 @@ impl EditorView {
                         .gap(px(space::XXS))
                         .children(rows),
                 )
-                .child(details),
+                .child(
+                    div()
+                        .id("lsp-details")
+                        .flex_1()
+                        .min_w(px(0.))
+                        .overflow_y_scroll()
+                        .track_scroll(&self.manager_ui.scroll)
+                        .child(details),
+                ),
         );
         if busy {
             panel = panel.child(design::divider(&theme)).child(
@@ -1152,18 +1159,15 @@ impl EditorView {
                 ),
                 Operation::TrustWorkspace(true) => format!(
                     "Trust {} for language services? Servers may execute project tools, build scripts or plugins with your permissions.",
-                    self.services.root.display()
+                    design::plain_path(&self.services.root)
                 ),
                 Operation::TrustWorkspace(false) => format!(
                     "Revoke language-server trust for {}? Running servers for this project will stop.",
-                    self.services.root.display()
+                    design::plain_path(&self.services.root)
                 ),
                 _ => String::new(),
             };
-            let destructive = matches!(
-                operation,
-                Operation::Remove(_) | Operation::Cleanup | Operation::TrustWorkspace(true)
-            );
+            let destructive = matches!(operation, Operation::Remove(_) | Operation::Cleanup);
             panel = panel.child(
                 div()
                     .flex()

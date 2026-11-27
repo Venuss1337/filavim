@@ -368,16 +368,20 @@ pub fn severity(theme: &Theme, severity: u32) -> (&'static str, Hsla) {
     }
 }
 
+fn unverbatim(path: &std::path::Path) -> &std::path::Path {
+    path.to_str()
+        .and_then(|s| s.strip_prefix(r"\\?\"))
+        .map_or(path, std::path::Path::new)
+}
+/// Presentation-only absolute path without the Windows verbatim (`\\?\`) prefix.
+pub fn plain_path(path: &std::path::Path) -> String {
+    unverbatim(path).display().to_string()
+}
 /// Presentation-only path: drops the Windows verbatim prefix and shows paths
 /// inside `root` relative to it. Never use the result for filesystem access.
 pub fn display_path(path: &std::path::Path, root: &std::path::Path) -> String {
-    fn plain(path: &std::path::Path) -> &std::path::Path {
-        path.to_str()
-            .and_then(|s| s.strip_prefix(r"\\?\"))
-            .map_or(path, std::path::Path::new)
-    }
-    let path = plain(path);
-    path.strip_prefix(plain(root))
+    let path = unverbatim(path);
+    path.strip_prefix(unverbatim(root))
         .ok()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(path)
@@ -413,6 +417,7 @@ mod tests {
                 display_path(Path::new(r"\\?\D:\other.rs"), root),
                 r"D:\other.rs"
             );
+            assert_eq!(plain_path(Path::new(r"\\?\C:\work")), r"C:\work");
         }
         assert_eq!(
             display_path(Path::new("/tmp/x.rs"), Path::new("/tmp")),

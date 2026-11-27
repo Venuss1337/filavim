@@ -2824,10 +2824,11 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) {
         let e = &self.model.editor;
+        // Typed input is primary content; feedback elsewhere stays secondary.
         let color = if e.error {
             self.theme.error
         } else {
-            self.theme.secondary
+            self.theme.text
         };
         if self.command_line.as_ref().is_none_or(|c| {
             c.line.text.as_ref() != text.as_str()
@@ -3498,6 +3499,9 @@ impl EditorView {
                         + space::SM
                 })
                 .sum::<f32>()
+                // Headroom for paragraph spacing and rules; floats below the caret
+                // shrink-wrap, so overestimating never leaves empty glass there.
+                * 1.2
         };
         let placement = place(
             bounds,
@@ -3530,7 +3534,7 @@ impl EditorView {
                         ) + space::LG
                             + space::MD * 3.
                             + 2.)
-                            .min(260.)
+                            .min(320.)
                     } else {
                         (text_height(
                             &mut panel.rows.iter().take(100).map(|r| r.label.as_str()),
@@ -3597,30 +3601,59 @@ impl EditorView {
                             .find(|(tag, _)| r.label.starts_with(tag))
                         })
                         .flatten();
-                    let content = match &r.choice {
-                        super::services::Choice::Signature(ranges) => {
-                            super::floating::signature(&r.label, ranges, theme)
-                        }
-                        _ => super::floating::documentation(
-                            severity.map_or_else(
-                                || r.label.clone(),
-                                |(tag, _)| r.label[tag.len()..].trim_start().to_owned(),
-                            ),
-                            theme,
-                        ),
-                    };
-                    match severity {
-                        Some((_, level)) => {
+                    match (severity, &r.choice) {
+                        (Some((tag, level)), _) => {
+                            // Services format: "[Severity] message\nserver · line:col".
+                            let body = r.label[tag.len()..].trim_start();
+                            let (message, meta) = body
+                                .rsplit_once('\n')
+                                .map_or((body, None), |(m, meta)| (m, Some(meta)));
+                            // Server keys carry their root after '@'; the panel
+                            // already belongs to this document, so show the name.
+                            let meta = meta.map(|meta| match meta.split_once(" · ") {
+                                Some((server, at)) => format!(
+                                    "{} · {at}",
+                                    server.split_once('@').map_or(server, |(s, _)| s)
+                                ),
+                                None => meta.to_owned(),
+                            });
                             let (glyph, color) = design::severity(&theme, level);
                             div()
                                 .flex()
+                                .items_start()
                                 .gap(px(space::SM))
-                                .mb(px(space::SM))
+                                .mb(px(space::MD))
                                 .child(design::icon(glyph, font_size, color))
-                                .child(div().flex_1().min_w(px(0.)).child(content))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .flex_1()
+                                        .min_w(px(0.))
+                                        .child(message.trim_end().to_owned())
+                                        .when_some(meta, |d, meta| {
+                                            d.child(
+                                                div()
+                                                    .text_size(px(scale.small))
+                                                    .text_color(theme.muted)
+                                                    .child(meta),
+                                            )
+                                        }),
+                                )
                                 .into_any_element()
                         }
-                        None => div().mb(px(space::SM)).child(content).into_any_element(),
+                        (None, super::services::Choice::Signature(ranges))
+                            if r.label.contains('(') =>
+                        {
+                            div()
+                                .mb(px(space::SM))
+                                .child(super::floating::signature(&r.label, ranges, theme))
+                                .into_any_element()
+                        }
+                        (None, _) => div()
+                            .mb(px(space::SM))
+                            .child(super::floating::documentation(r.label.clone(), theme))
+                            .into_any_element(),
                     }
                 })
                 .collect::<Vec<_>>()
@@ -3634,7 +3667,8 @@ impl EditorView {
         let body = if information {
             div()
                 .id("popup-content")
-                .flex_1()
+                // Auto basis: grows in fixed frames, shrink-wraps in fitted ones.
+                .flex_auto()
                 .min_h(px(0.))
                 .overflow_y_scroll()
                 .track_scroll(&self.popup_scroll)
@@ -3689,9 +3723,16 @@ impl EditorView {
             panel.title.clone()
         };
         let count = (!information).then(|| format!("{} / {}", selected + 1, panel.rows.len()));
+        let fit = information && minimal && !placement.above;
         let surface = super::floating::frame(theme, "floating-popup", font_size)
             .w(dimensions.width)
-            .h(dimensions.height)
+            .map(|d| {
+                if fit {
+                    d.max_h(dimensions.height)
+                } else {
+                    d.h(dimensions.height)
+                }
+            })
             .when(minimal, |d| {
                 d.pt(px(space::LG)).pb(px(space::MD)).child(design::notch(
                     &theme,
@@ -3768,7 +3809,7 @@ impl EditorView {
             draws.push((
                 super::floating::frame(theme, "completion-documentation", font_size)
                     .w(dimensions.width)
-                    .h(dimensions.height)
+                    .max_h(dimensions.height)
                     .child(design::notch(
                         &theme,
                         icons::INFO,
@@ -3778,7 +3819,7 @@ impl EditorView {
                     .child(
                         div()
                             .id("completion-documentation-content")
-                            .flex_1()
+                            .flex_auto()
                             .min_h(px(0.))
                             .overflow_y_scroll()
                             .track_scroll(&self.documentation_scroll)

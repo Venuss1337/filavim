@@ -68,5 +68,14 @@ and SHA-256 are retained in `assets/fonts/`. This font is embedded only for
 application text rendering, with no system installation. Its font license
 remains distinct from the application's GPL-3.0-only license.
 
-Historical smear/Neovide notices above apply to their retained source files;
-those modules are not compiled into the native Checkpoint 1 application.
+Historical smear and Neovide notices above apply to the retained terminal
+source files. The native cursor is implemented separately in `src/gui/cursor.rs`.
+
+The native Cyberdream palettes and blend logic derive from Cyberdream.nvim by
+Scott McKendry under the MIT license. See [palette provenance](CYBERDREAM.md) and
+the [retained MIT notice](assets/licenses/cyberdream-MIT.txt).
+
+The source repository references Cargo dependencies by version and lockfile.
+Binary packages must include applicable dependency notices and source offers,
+including the MPL-2.0 source for `nucleo` and `nucleo-matcher`. The repository
+contains no bundled SDK, language-server binary, or proprietary font file.

@@ -26,11 +26,11 @@ Public builds/CI must use the default features (optionally `perf`), **never**
 environments and with compiler-wrapper environment variables set. Do not disable
 these guards in a public build. Local build outputs remain under ignored `target/`.
 
-Download the original file into the ignored `.local/fonts/` directory:
+If your license permits local embedding, place your licensed copy at
+`.local/fonts/Operator Mono Medium Nerd Font Complete.otf`:
 
 ```powershell
 New-Item -ItemType Directory -Force .local/fonts
-Invoke-WebRequest 'https://raw.githubusercontent.com/ajaybhatia/OperatorMonoLig-Fonts/master/Operator%20Mono%20Medium%20Nerd%20Font%20Complete.otf' -OutFile '.local/fonts/Operator Mono Medium Nerd Font Complete.otf'
 cargo build --release --features dev-operator-font
 ```
 

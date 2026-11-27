@@ -141,6 +141,13 @@ server instances. The installer resolves executables; `lsp::Client` handles proc
 startup/initialize and emits readiness/capability events. Opening/editing/saving/
 closing documents schedules protocol synchronization. No service wait belongs in paint.
 
+The manager gates both executable discovery and activation on project trust.
+The worker verifies the approved directory identity and resolves contained document
+and server roots before Services may start a project process. Trust is persisted
+with manager receipts and changing trust invalidates the resolved snapshot.
+The native overlay requests changes through the same worker as other manager
+operations. Managed tools can be staged and probed in isolated temporary workspaces.
+
 Completion flow:
 
 1. `changed` / typed triggers / explicit invocation reach `automatic_completion`
@@ -172,8 +179,10 @@ while new parses run. Highlights use bytes; do not transform them as scalar rang
 
 `LatestWorker` replaces one pending job; `KeyedWorker` preserves independent keys
 on one preparation thread. Cancellation checks generations cooperatively. The LSP
-queues expose metrics and ordering/coalescing, not a guarantee of bounded capacity.
-Do not document a bounded drain budget as bounded total memory or total frame time.
+queues cap admitted work at 256 messages and 32 MiB of estimated payload per queue.
+Initialization backlog and pending requests have separate limits. Overflow closes
+the transport, delivers a terminal error and leaves retry policy with Services.
+These limits are per transport and payload estimates do not measure total heap use.
 
 Workers call `background::wake`; the view drains a capacity-one async notification
 channel and polls services/explorer. This coalesces wakes rather than polling every

@@ -64,6 +64,7 @@ implementation limits and the numbered manual walkthrough.
 ### Native language tools
 
 Use `:LspManager` for native installation, server preferences and workspace process controls.
+Choose **Trust project for LSP** to allow language servers to start in the current project.
 See [Language intelligence and managed servers](docs/LANGUAGE_INTELLIGENCE.md) for the catalog, controls, and validation limits.
 
 Completion now uses persistent, locally filtered sessions rather than a typing-pause timer.

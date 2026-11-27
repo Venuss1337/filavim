@@ -8,6 +8,23 @@ Updates use the same pipeline. Failed updates retain the active receipt.
 Uninstall requires confirmation and only removes marked FilaVim-owned generations.
 Close other FilaVim instances before uninstalling tools they may still be using.
 
+## Workspace trust
+
+A new project opens with language servers disabled. Open `:LspManager`, choose
+**Trust project for LSP** (Ctrl-T), and confirm the displayed folder. Approval is
+stored with the canonical folder path and its filesystem identity. A replacement
+directory at the same path requires a new approval. Trust includes contained
+nested project roots. Documents outside the approved folder do not participate.
+Revoking trust stops the current project's language servers.
+
+Managed installation and update checks are available before trusting a project.
+Browsing an untrusted project does not probe project-local Node packages, Python
+environments, or configured servers. The manager identifies managed,
+workspace-provided, explicitly configured and system executable origins after
+resolution. A trusted server runs with the user's permissions and may load project
+plugins, configuration or build scripts. Workspace trust is an execution
+permission and provides no process sandbox.
+
 ## Required catalog
 
 | ID | Languages | Stable version source | Artifact verification |
@@ -72,10 +89,17 @@ artifact consistency; they are not independent signatures against upstream accou
 compromise. Node's manifest is obtained over trusted HTTPS, not signature-verified.
 
 A cross-process lock serializes mutations. Activation publishes a receipt only
-after launch validation and initialization. Older generations are retained because
-another process may be using them; uninstall is currently the cleanup mechanism.
-There is no automatic rollback selector, runtime garbage collector, or bounded
-old-generation retention policy yet. Download caches used by npm are temporary.
+after launch validation and initialization. **Update / reinstall** stages a new
+copy without removing the active one. **Roll back** (Ctrl-B) checks the previous
+managed generation in an empty temporary project, then swaps the active and
+previous receipts atomically. Failed validation retains the active receipt.
+
+Eligible rollback history is one generation. Older generation files remain on
+disk because another editor instance may still be using them. Shared Node
+generations are retained. Cross-process generation leases, dependency-aware
+cleanup and explicit runtime-only repair are still pending. Reinstall can recover
+a server using a damaged managed Node fallback by resolving a usable runtime
+during staging. Download caches used by npm are temporary.
 
 ## Features and current limits
 
@@ -105,7 +129,10 @@ the applied prefix and reports failures and any retained backup paths. The mock
 and filesystem suites exercise these paths. The earlier five-tool real-server run
 predates this implementation.
 
-Dynamic registration is limited to completion. Crashes require explicit restart.
+Dynamic registration is limited to completion. A failed server gets at most two
+automatic retries, after 250 ms and one second. A server running for at least
+60 seconds earns a fresh retry budget. A third consecutive failure leaves the
+server failed until an explicit Start or Restart.
 The Milestone 4 and 4.1 reports record earlier capability and validation states.
 
 ## Maintenance, tests and licensing
@@ -124,3 +151,54 @@ TypeScript Language Server MIT, Pyright/TypeScript MIT, Node MIT plus bundled
 third-party notices. Inspect each resolved package/archive's LICENSE/NOTICE files.
 On-demand download does not remove attribution or redistribution obligations;
 bundling these artifacts in a future release requires a separate license review.
+
+## Milestone 4.2 acceptance checklist
+
+- Verify the existing five managed recipes on Windows x64 with actual downloads,
+  editor activation, completion insertion, current diagnostics, advertised
+  definition behavior, and clean stop/restart. Record unsupported capabilities.
+- Complete real-server code-action and ordered resource-edit acceptance for the
+  applicable servers. The verified navigation and text-edit capabilities are in
+  the matrix below.
+- Verify failed updates preserve active receipts, managed rollback revalidates its
+  executable, and trust revocation stops processes. Test projects with replaced
+  directories and documents outside the trusted root.
+- Complete dependency leases, safe obsolete-generation cleanup, and a supported
+  runtime repair operation. Qualify transaction failure/cancellation against real
+  packages, including shared runtime dependencies.
+- Transport queues now fail explicitly on overflow. Verify complete descendant-process
+  cleanup and cancellation across platforms. Crash-loop and project switching have
+  local regression coverage.
+- [Red Hat YAML Language Server](https://github.com/redhat-developer/yaml-language-server)
+  is a candidate for the shared npm installer. [Taplo](https://taplo.tamasfe.dev/cli/installation/binary.html)
+  publishes TOML binaries and needs an artifact-integrity recipe. HTML/CSS, ESLint
+  and Tailwind need package provenance and project-plugin validation. LuaLS needs
+  binary and workspace configuration review. Gopls needs Go toolchain resolution.
+  These remain outside the managed catalog.
+
+
+### Windows x64 real-server results
+
+All five versions below passed managed installation, initialization, completion
+insertion, revision-current diagnostics, hover, document symbols, stop, restart,
+and shutdown through the editor service. The npm tools used the managed Node 24
+LTS fallback. Rename and formatting updates were verified in editor buffers,
+with disk bytes preserved and the edit undoable.
+
+| Server | Version | Definition | Signature | References | Workspace symbols | Formatting | Rename and workspace text edit |
+|---|---|---|---|---|---|---|---|
+| rust-analyzer | 2026-11-23 | Pass | Pass | Pass | Pass | Pass | Pass |
+| clangd | 23.1.0 | Pass | Pass | Pass | Pass | Pass | Pass |
+| TypeScript Language Server | 6.1.0 | Pass | Pass | Pass | Pass | Pass | Pass |
+| Pyright | 1.1.414 | Pass | Pass | Pass | Pass | Unsupported | Pass |
+| JSON Language Server | 1.3.4 | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported |
+
+A separate rust-analyzer create-module test passed the real code-action and
+ordered resource-edit path. clangd, TypeScript Language Server, and Pyright
+advertised code actions, which still need dedicated real fixtures. The JSON
+server did not advertise code actions. Managed rollback, crash limits, trust,
+and overload handling have local regression coverage. The live matrix did not
+induce network interruption or runtime corruption in the real installations.
+
+Milestone 4.2 remains open for the remaining qualification and infrastructure
+items above.

@@ -2,9 +2,8 @@
 //!
 //! [`Client`] queues commands for process I/O threads and emits [`Event`] values;
 //! it does not own editor state or popup policy. Native request validation/routing
-//! lives in [`crate::gui::services`]. Message sizes and logs have limits, but the
-//! instrumented queues are not capacity-bounded; document updates coalesce only
-//! where request/notification ordering barriers permit it.
+//! lives in [`crate::gui::services`]. Overloaded transports fail as a unit so
+//! protocol state cannot silently continue after dropping a message.
 #[path = "lsp_workspace.rs"]
 pub mod workspace;
 use anyhow::{Context, Result, anyhow, bail};
@@ -276,7 +275,10 @@ enum Input {
     Cancel(u64),
     Wire(Result<Value, String>),
     Stop,
+    Overloaded,
 }
+const QUEUE_DEPTH: usize = 256;
+const QUEUE_BYTES: usize = 32 * 1024 * 1024;
 struct DocumentUpdate {
     uri: String,
     language: String,
@@ -284,6 +286,23 @@ struct DocumentUpdate {
     text: Rope,
     open: bool,
     changes: Option<(u64, Vec<crate::buffer::TextChange>)>,
+    text_capacity: usize,
+    change_capacity: usize,
+}
+impl Input {
+    fn queued_bytes(&self) -> usize {
+        match self {
+            Self::Send(value) | Self::Request(_, value) => value_volume(value),
+            Self::Saved(uri, text) => uri.len() + text.as_ref().map_or(0, Rope::len_bytes),
+            Self::Document(slot) => slot.lock().unwrap().as_ref().map_or(0, |update| {
+                update.text_capacity
+                    + update.change_capacity
+                    + update.uri.len()
+                    + update.language.len()
+            }),
+            _ => 0,
+        }
+    }
 }
 type DocumentSlot = std::sync::Arc<std::sync::Mutex<Option<DocumentUpdate>>>;
 type DocumentSlots =
@@ -307,11 +326,15 @@ struct Events(crate::queue::Sender<Event>);
 impl Events {
     fn send(&self, event: Event) -> Result<(), Box<mpsc::SendError<Event>>> {
         let bytes = match &event {
-            Event::Reply { result, .. } => value_volume(result),
-            Event::Notification { params, .. } | Event::ServerRequest { params, .. } => {
-                value_volume(params)
+            Event::Reply { result, error, .. } => {
+                value_volume(result) + error.as_ref().map_or(0, String::len)
             }
-            _ => 64,
+            Event::Notification { method, params } => method.len() + value_volume(params),
+            Event::ServerRequest { id, method, params } => {
+                value_volume(id) + method.len() + value_volume(params)
+            }
+            Event::Ready { capabilities, .. } => value_volume(capabilities),
+            Event::Stopped(reason) => reason.len(),
         };
         let result = self.0.send_sized(event, bytes);
         crate::background::wake();
@@ -320,8 +343,8 @@ impl Events {
 }
 impl Client {
     pub fn start(config: ServerConfig, root: PathBuf, timeout: Duration) -> Self {
-        let (tx, rx) = crate::queue::channel();
-        let (events_tx, events) = crate::queue::channel();
+        let (tx, rx) = crate::queue::bounded(QUEUE_DEPTH, QUEUE_BYTES, Some(|| Input::Overloaded));
+        let (events_tx, events) = crate::queue::bounded(QUEUE_DEPTH, QUEUE_BYTES, None);
         let input_metrics = tx.metrics();
         let event_metrics = events_tx.metrics();
         let wire = tx.clone();
@@ -341,7 +364,7 @@ impl Client {
                 Events(events_tx.clone()),
                 (worker_process, worker_stderr),
             ) {
-                let _ = events_tx.send(Event::Stopped(format!("{e:#}")));
+                let _ = events_tx.send_terminal(Event::Stopped(format!("{e:#}")));
             }
             done.store(true, std::sync::atomic::Ordering::Release);
             crate::background::wake();
@@ -371,9 +394,7 @@ impl Client {
     }
     pub fn notify(&self, method: &str, params: Value) {
         self.seal_documents();
-        let _ = self.tx.send(Input::Send(
-            json!({"jsonrpc":"2.0","method":method,"params":params}),
-        ));
+        self.send_json(json!({"jsonrpc":"2.0","method":method,"params":params}));
     }
     pub fn document(&self, uri: String, language: String, version: u64, text: Rope, open: bool) {
         self.document_changes(uri, language, version, text, open, None);
@@ -392,6 +413,7 @@ impl Client {
             && let Some(previous) = slot.lock().unwrap().as_mut()
             && !previous.open
             && !open
+            && text.len_bytes() <= previous.text_capacity
         {
             if version <= previous.version {
                 return;
@@ -400,7 +422,8 @@ impl Client {
                 (Some((base, mut edits)), Some((from, next))) if from == previous.version => {
                     edits.extend(next);
                     if edits.len() <= 256
-                        && edits.iter().map(|e| e.text.len()).sum::<usize>() <= 1024 * 1024
+                        && edits.iter().map(|e| e.text.len()).sum::<usize>()
+                            <= previous.change_capacity
                     {
                         Some((base, edits))
                     } else {
@@ -415,6 +438,14 @@ impl Client {
             return;
         }
         slots.retain(|_, slot| slot.strong_count() > 0);
+        let text_capacity = text.len_bytes().max(4096).next_power_of_two();
+        let change_capacity = changes
+            .as_ref()
+            .map_or(0, |(_, edits)| {
+                edits.iter().map(|edit| edit.text.len()).sum::<usize>()
+            })
+            .max(4096)
+            .next_power_of_two();
         let slot: DocumentSlot = std::sync::Arc::new(std::sync::Mutex::new(Some(DocumentUpdate {
             uri: uri.clone(),
             language,
@@ -422,14 +453,13 @@ impl Client {
             text,
             open,
             changes,
+            text_capacity,
+            change_capacity,
         })));
         slots.insert(uri, std::sync::Arc::downgrade(&slot));
-        let bytes = slot
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map_or(0, |d| d.text.len_bytes());
-        let _ = self.tx.send_sized(Input::Document(slot), bytes);
+        let input = Input::Document(slot);
+        let bytes = input.queued_bytes();
+        let _ = self.tx.send_sized(input, bytes);
     }
     // Requests/notifications are ordering barriers: edits after one must never be
     // folded into a document update queued before it.
@@ -453,15 +483,15 @@ impl Client {
     }
     pub fn respond(&self, id: Value, result: Value) {
         self.seal_documents();
-        let _ = self.tx.send(Input::Send(
-            json!({"jsonrpc":"2.0","id":id,"result":result}),
-        ));
+        self.send_json(json!({"jsonrpc":"2.0","id":id,"result":result}));
     }
     pub fn respond_error(&self, id: Value, code: i64, message: &str) {
         self.seal_documents();
-        let _ = self.tx.send(Input::Send(
-            json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}}),
-        ));
+        self.send_json(json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}}));
+    }
+    fn send_json(&self, value: Value) {
+        let bytes = value_volume(&value);
+        let _ = self.tx.send_sized(Input::Send(value), bytes);
     }
     pub fn shutdown(&self) {
         self.seal_documents();
@@ -572,8 +602,13 @@ fn serve(
     let mut sync = DocumentSync::default();
     let init_deadline = Instant::now() + timeout;
     let mut queued = Vec::new();
+    let mut queued_bytes = 0usize;
     let mut pending = BTreeMap::new();
     loop {
+        anyhow::ensure!(
+            !rx.overflowed() && !events.0.overflowed(),
+            "Language server transport overloaded"
+        );
         let now = Instant::now();
         let wait = if initialized {
             pending
@@ -590,6 +625,7 @@ fn serve(
             Err(mpsc::RecvTimeoutError::Timeout) => None,
             Err(_) => Some(Input::Stop),
         };
+        anyhow::ensure!(!rx.overflowed(), "Language server input queue overloaded");
         if !initialized && Instant::now() > init_deadline {
             bail!("Language server initialization timed out")
         }
@@ -605,10 +641,17 @@ fn serve(
                 )
             )
         {
-            queued.push(input.unwrap());
+            let input = input.unwrap();
+            queued_bytes = queued_bytes.saturating_add(input.queued_bytes());
+            anyhow::ensure!(
+                queued.len() < QUEUE_DEPTH && queued_bytes <= QUEUE_BYTES,
+                "Language server initialization backlog exceeded its limit"
+            );
+            queued.push(input);
             continue;
         }
         match input {
+            Some(Input::Overloaded) => bail!("Language server input queue overloaded"),
             Some(Input::Stop) => {
                 if initialized {
                     write_message(
@@ -645,6 +688,10 @@ fn serve(
                 }
             }
             Some(Input::Request(id, v)) => {
+                anyhow::ensure!(
+                    pending.len() < QUEUE_DEPTH,
+                    "Too many outstanding language server requests"
+                );
                 pending.insert(id, Instant::now() + timeout);
                 write_message(&mut stdin, &v)?;
                 #[cfg(feature = "perf")]
@@ -802,6 +849,7 @@ fn write_document(
         text,
         open,
         changes,
+        ..
     } = update;
     if !open
         && sync
@@ -1071,6 +1119,8 @@ mod performance_tests {
             text: buffer.text.clone(),
             open: false,
             changes: buffer.changes_since(base).map(|e| (base, e)),
+            text_capacity: 4096,
+            change_capacity: 4096,
         }
     }
     #[test]

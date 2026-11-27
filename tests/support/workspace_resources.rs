@@ -873,16 +873,16 @@ fn real_rust_analyzer_create_module_resource_action() {
             s.request(&d, Kind::Actions, None);
             requested = Instant::now();
         }
-        if accepted && !s.workspace_active() {
-            if let Some(module) = [
+        if accepted
+            && !s.workspace_active()
+            && let Some(module) = [
                 temp.path().join("src/helper.rs"),
                 temp.path().join("src/helper/mod.rs"),
             ]
             .into_iter()
             .find(|p| p.is_file())
-            {
-                break module;
-            }
+        {
+            break module;
         }
         assert!(
             started.elapsed() < Duration::from_secs(40),

@@ -1,5 +1,12 @@
 //! The full suite builds the tiny fixture once through Cargo. Direct cargo test
 //! without test-tools retains a self-contained, temporary rustc fallback.
+pub fn tempdir() -> tempfile::TempDir {
+    // macOS TMPDIR can be under /var, an alias for /private/var. Use the
+    // canonical parent just as opening a project resolves its on-disk path.
+    let parent = std::env::temp_dir().canonicalize().unwrap();
+    tempfile::tempdir_in(parent).unwrap()
+}
+
 pub fn mock_executable(directory: &std::path::Path) -> std::path::PathBuf {
     #[cfg(feature = "test-tools")]
     {

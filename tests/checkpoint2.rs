@@ -178,7 +178,7 @@ fn until(mut test: impl FnMut() -> bool) {
 }
 #[test]
 fn native_lsp_mock_diagnostics_completion_and_stale_response() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = support::tempdir();
     let exe = support::mock_executable(temp.path());
     let log = temp.path().join("messages.log");
     let mut config = Config::default();
@@ -301,7 +301,7 @@ fn native_lsp_mock_diagnostics_completion_and_stale_response() {
 
 #[test]
 fn explorer_reuses_ignore_rules_and_discards_superseded_projects() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = support::tempdir();
     let root = temp.path().join("project");
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(root.join(".ignore"), "ignored.txt\n").unwrap();
@@ -338,7 +338,7 @@ fn explorer_reuses_ignore_rules_and_discards_superseded_projects() {
 }
 #[test]
 fn git_and_settings_only_touch_isolated_fixtures() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = support::tempdir();
     let root = temp.path();
     let git = |args: &[&str]| {
         std::process::Command::new("git")
@@ -376,7 +376,7 @@ fn git_and_settings_only_touch_isolated_fixtures() {
 
 #[test]
 fn completion_dynamic_readiness_and_ts_js_contexts_reach_the_popup() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = support::tempdir();
     let exe = support::mock_executable(temp.path());
     let mut config = Config {
         syntax: false,
@@ -447,7 +447,7 @@ fn completion_dynamic_readiness_and_ts_js_contexts_reach_the_popup() {
 }
 #[test]
 fn completion_recovers_coalesced_typing_after_empty_error_and_out_of_order_replies() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = support::tempdir();
     let exe = support::mock_executable(temp.path());
     for scenario in ["empty", "error", "filtered", "superseded"] {
         let log = temp.path().join(format!("{scenario}.log"));
@@ -522,7 +522,7 @@ fn completion_recovers_coalesced_typing_after_empty_error_and_out_of_order_repli
 }
 #[test]
 fn completion_sessions_publish_progressively_rebase_and_cancel_across_documents() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = support::tempdir();
     let exe = support::mock_executable(temp.path());
     let mut config = Config {
         syntax: false,
@@ -660,7 +660,7 @@ fn completion_sessions_publish_progressively_rebase_and_cancel_across_documents(
 #[test]
 fn native_resolved_actions_run_commands_only_after_validated_edits() {
     use filavim::gui::services::Choice;
-    let temp = tempfile::tempdir().unwrap();
+    let temp = support::tempdir();
     let executable = support::mock_executable(temp.path());
     let log = temp.path().join("protocol.log");
     let mut config = Config {
@@ -755,7 +755,7 @@ fn native_resolved_actions_run_commands_only_after_validated_edits() {
 
 #[test]
 fn workspace_edit_of_closed_file_keeps_baseline_for_safe_save() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = support::tempdir();
     let path = temp.path().join("closed.rs");
     std::fs::write(&path, "old").unwrap();
     let edit = serde_json::json!({"changes":{lsp::uri(&path).unwrap():[{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":3}},"newText":"new"}]}});
@@ -781,7 +781,7 @@ fn workspace_edit_of_closed_file_keeps_baseline_for_safe_save() {
 
 #[test]
 fn ordered_text_document_edits_use_previous_results_and_require_annotation_approval() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = support::tempdir();
     let path = temp.path().join("ordered.rs");
     std::fs::write(&path, "abc").unwrap();
     let uri = lsp::uri(&path).unwrap();

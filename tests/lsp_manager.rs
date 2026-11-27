@@ -36,7 +36,7 @@ fn add(docs: &mut Documents, path: &Path) {
 }
 #[test]
 fn empty_editor_does_not_probe_tools_or_create_manager_state() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = support::tempdir();
     let data = temp.path().join("tools");
     let docs = Documents::new(
         Model::new(Config {
@@ -54,7 +54,7 @@ fn empty_editor_does_not_probe_tools_or_create_manager_state() {
 }
 #[test]
 fn complementary_servers_share_roots_route_capabilities_and_stop_without_restart_loops() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = support::tempdir();
     let root = temp.path().join("project");
     std::fs::create_dir(&root).unwrap();
     std::fs::write(root.join("pyproject.toml"), "").unwrap();
@@ -184,7 +184,7 @@ fn complementary_servers_share_roots_route_capabilities_and_stop_without_restart
 
 #[test]
 fn crashed_server_stays_failed_until_explicit_restart_and_reports_failure() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = support::tempdir();
     let executable = support::mock_executable(temp.path());
     let log = temp.path().join("crash.log");
     let mut config = Config {

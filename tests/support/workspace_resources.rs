@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 #[test]
 fn case_only_file_and_directory_renames_preserve_identity_and_allow_following_edits() {
     for directory in [false, true] {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = support::tempdir();
         let from = temp
             .path()
             .join(if directory { "folder" } else { "lower.rs" });
@@ -53,7 +53,7 @@ fn case_only_file_and_directory_renames_preserve_identity_and_allow_following_ed
 }
 #[test]
 fn reconciliation_keeps_newer_text_but_still_maps_the_committed_resource_prefix() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = support::tempdir();
     let from = temp.path().join("from.rs");
     let to = temp.path().join("to.rs");
     std::fs::write(&from, "abc").unwrap();
@@ -82,7 +82,7 @@ fn reconciliation_keeps_newer_text_but_still_maps_the_committed_resource_prefix(
 }
 #[test]
 fn resource_notifications_match_filters_and_keep_protocol_order() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = support::tempdir();
     let a = temp.path().join("a.rs");
     let b = temp.path().join("b.rs");
     let mut d = docs();
@@ -180,7 +180,7 @@ fn junction(path: &Path, destination: &Path) {
 }
 #[test]
 fn parent_replacement_and_same_content_file_replacement_invalidate_approval() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = support::tempdir();
     let parent = temp.path().join("parent");
     std::fs::create_dir(&parent).unwrap();
     let file = parent.join("new");
@@ -213,8 +213,8 @@ fn parent_replacement_and_same_content_file_replacement_invalidate_approval() {
 #[cfg(windows)]
 #[test]
 fn junction_escape_before_planning_and_while_awaiting_approval_are_rejected() {
-    let temp = tempfile::tempdir().unwrap();
-    let outside = tempfile::tempdir().unwrap();
+    let temp = support::tempdir();
+    let outside = support::tempdir();
     let link = temp.path().join("junction");
     junction(&link, outside.path());
     let value = request(vec![json!({"kind":"create","uri":uri(&link.join("new"))})]);
@@ -235,7 +235,7 @@ fn junction_escape_before_planning_and_while_awaiting_approval_are_rejected() {
 }
 #[test]
 fn recovery_metadata_tracks_dirty_renames_and_untitled_deletion_without_new_typing() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = support::tempdir();
     let root = temp.path().join("project");
     std::fs::create_dir(&root).unwrap();
     let original = root.join("a.rs");
@@ -335,7 +335,7 @@ fn apply(root: &Path, d: &mut Documents, value: Value) -> workspace::Outcome {
 }
 #[test]
 fn create_edit_rename_edit_is_ordered_and_text_is_undoable_unsaved_content() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = support::tempdir();
     let a = temp.path().join("new.rs");
     let b = temp.path().join("renamed.rs");
     let mut d = docs();
@@ -374,7 +374,7 @@ fn create_and_rename_options_follow_overwrite_precedence_and_preserve_originals(
         (true, false, true, true),
         (true, true, true, true),
     ] {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = support::tempdir();
         let a = temp.path().join("a");
         let b = temp.path().join("b");
         std::fs::write(&a, "source").unwrap();
@@ -425,7 +425,7 @@ fn create_and_rename_options_follow_overwrite_precedence_and_preserve_originals(
 }
 #[test]
 fn directory_rename_preserves_dirty_descendant_identity_cursor_and_history() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = support::tempdir();
     let old = temp.path().join("old");
     let new = temp.path().join("new");
     std::fs::create_dir(&old).unwrap();
@@ -459,7 +459,7 @@ fn directory_rename_preserves_dirty_descendant_identity_cursor_and_history() {
 }
 #[test]
 fn deletion_keeps_open_dirty_text_recoverable_and_retains_recursive_backup() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = support::tempdir();
     let directory = temp.path().join("directory");
     std::fs::create_dir(&directory).unwrap();
     let path = directory.join("a.rs");
@@ -497,7 +497,7 @@ fn deletion_keeps_open_dirty_text_recoverable_and_retains_recursive_backup() {
 }
 #[test]
 fn invalid_late_operation_applies_nothing_and_approval_is_bound_to_disk_state() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = support::tempdir();
     let a = temp.path().join("a");
     let b = temp.path().join("b");
     std::fs::write(&a, "original").unwrap();
@@ -524,8 +524,8 @@ fn invalid_late_operation_applies_nothing_and_approval_is_bound_to_disk_state() 
 }
 #[test]
 fn annotations_outside_workspace_and_invalid_uris_are_explicit() {
-    let temp = tempfile::tempdir().unwrap();
-    let outside = tempfile::tempdir().unwrap();
+    let temp = support::tempdir();
+    let outside = support::tempdir();
     let path = outside.path().join("new.rs");
     let mut value = request(vec![
         json!({"kind":"create","uri":uri(&path),"annotationId":"reason"}),
@@ -560,7 +560,7 @@ fn annotations_outside_workspace_and_invalid_uris_are_explicit() {
 }
 #[test]
 fn dirty_destination_and_stale_version_are_rejected_without_disk_mutation() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = support::tempdir();
     let a = temp.path().join("a");
     let b = temp.path().join("b");
     std::fs::write(&a, "a").unwrap();
@@ -586,7 +586,7 @@ fn dirty_destination_and_stale_version_are_rejected_without_disk_mutation() {
 }
 #[test]
 fn readonly_mid_execution_failure_reports_prefix_and_preserves_every_version() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = support::tempdir();
     let a = temp.path().join("a");
     let b = temp.path().join("b");
     std::fs::write(&b, "keep").unwrap();
@@ -657,7 +657,7 @@ fn wire_response(log: &Path) -> Option<Value> {
 #[test]
 fn server_apply_edit_rejection_and_stale_approval_reply_without_mutation() {
     for stale in [false, true] {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = support::tempdir();
         let path = temp.path().join("main.rs");
         let value = request(vec![json!({"kind":"delete","uri":uri(&path)})]);
         let (mut d, mut s, log, path) = mock_services(temp.path(), &value);
@@ -690,7 +690,7 @@ fn server_apply_edit_rejection_and_stale_approval_reply_without_mutation() {
 }
 #[test]
 fn client_action_and_duplicate_server_request_apply_once_and_remap_uris() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = support::tempdir();
     let path = temp.path().join("main.rs");
     let renamed = temp.path().join("renamed.rs");
     let value = request(vec![
@@ -770,7 +770,7 @@ fn client_action_and_duplicate_server_request_apply_once_and_remap_uris() {
 #[test]
 fn server_invalid_plan_and_pending_save_return_accurate_failure() {
     for busy in [false, true] {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = support::tempdir();
         let created = temp.path().join("created.rs");
         let path = temp.path().join("main.rs");
         let value = request(vec![
@@ -812,7 +812,7 @@ fn real_rust_analyzer_create_module_resource_action() {
         "REAL RESOURCE SERVER: {}",
         String::from_utf8_lossy(&version.stdout).trim()
     );
-    let temp = tempfile::tempdir().unwrap();
+    let temp = support::tempdir();
     std::fs::create_dir(temp.path().join("src")).unwrap();
     std::fs::write(
         temp.path().join("Cargo.toml"),
@@ -932,7 +932,7 @@ fn real_rust_analyzer_create_module_resource_action() {
 
 #[test]
 fn create_preserves_an_unsaved_document_already_owning_the_new_filename() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = support::tempdir();
     let path = temp.path().join("new.rs");
     let mut d = docs();
     let id = tracked(&mut d, &path);
@@ -950,7 +950,7 @@ fn create_preserves_an_unsaved_document_already_owning_the_new_filename() {
 }
 #[test]
 fn mixed_unicode_crlf_edits_project_selection_and_undo_without_reversing_rename() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = support::tempdir();
     let path = temp.path().join("a.rs");
     let to = temp.path().join("b.rs");
     let text = "😀é\r\nnext\r\n";
@@ -980,7 +980,7 @@ fn mixed_unicode_crlf_edits_project_selection_and_undo_without_reversing_rename(
 }
 #[test]
 fn changed_later_target_and_unexpected_destinations_reject_the_whole_plan() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = support::tempdir();
     let a = temp.path().join("a");
     let b = temp.path().join("b");
     std::fs::write(&b, "original").unwrap();
@@ -1023,7 +1023,7 @@ fn changed_later_target_and_unexpected_destinations_reject_the_whole_plan() {
 }
 #[test]
 fn multiple_annotations_bind_to_changes_and_rejected_versions_never_mutate_disk() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = support::tempdir();
     let a = temp.path().join("a.rs");
     let b = temp.path().join("b.rs");
     let value = json!({"documentChanges":[{"kind":"create","uri":uri(&a),"annotationId":"create"},edit(&a,0,0,"new"),{"kind":"rename","oldUri":uri(&a),"newUri":uri(&b),"annotationId":"rename"}],"changeAnnotations":{"create":{"label":"Create helper","needsConfirmation":true},"rename":{"label":"Move helper","description":"New module name","needsConfirmation":true}}});
@@ -1052,7 +1052,7 @@ fn multiple_annotations_bind_to_changes_and_rejected_versions_never_mutate_disk(
 }
 #[test]
 fn server_can_reuse_a_completed_request_id_and_partial_failures_report_the_index() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = support::tempdir();
     let main = temp.path().join("main.rs");
     let value = request(vec![json!({"kind":"delete","uri":uri(&main)})]);
     let (mut d, mut s, log, _) = mock_services(temp.path(), &value);
@@ -1115,7 +1115,7 @@ fn workspace_resource_operation_timings() {
     let mut planning = Vec::new();
     let mut execution = Vec::new();
     for _ in 0..7 {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = support::tempdir();
         let from = temp.path().join("source");
         let to = temp.path().join("destination");
         std::fs::create_dir(&from).unwrap();
@@ -1153,7 +1153,7 @@ fn workspace_resource_operation_timings() {
 
 #[test]
 fn deleting_the_last_file_can_execute_a_command_and_acknowledge_its_nested_edit() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = support::tempdir();
     let main = temp.path().join("main.rs");
     let generated = temp.path().join("generated.rs");
     let value = request(vec![json!({"kind":"create","uri":uri(&generated)})]);
@@ -1221,7 +1221,7 @@ fn deleting_the_last_file_can_execute_a_command_and_acknowledge_its_nested_edit(
 }
 #[test]
 fn catalog_rename_reuses_the_running_process_during_asynchronous_path_resolution() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = support::tempdir();
     let root = temp.path();
     std::fs::write(
         root.join("Cargo.toml"),

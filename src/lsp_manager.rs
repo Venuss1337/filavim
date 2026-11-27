@@ -143,6 +143,8 @@ pub enum Operation {
     Install(String),
     Rollback(String),
     Remove(String),
+    RepairRuntime,
+    Cleanup,
     TrustWorkspace(bool),
     Configure { workspace: bool, change: Change },
 }
@@ -1352,6 +1354,125 @@ fn untrusted_status(entry: &Entry, data: &Path, store: &Store) -> Status {
         ..Status::default()
     }
 }
+fn cleanup(data: &Path, store: &Store, cancel: &AtomicBool, report: &impl Fn(&str)) -> Result<()> {
+    let mut retained = BTreeSet::new();
+    if let Ok(pointer) = std::fs::read(data.join("runtimes/node/current.json"))
+        && let Ok(node) = serde_json::from_slice::<PathBuf>(&pointer)
+    {
+        for parent in node.ancestors() {
+            if parent
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("generation-"))
+                && parent.exists()
+            {
+                retained.insert(parent.canonicalize()?);
+                break;
+            }
+        }
+    }
+    for installation in store.installed.values().chain(store.previous.values()) {
+        retained.insert(installation.directory.canonicalize()?);
+        for parent in installation.launch.command.ancestors() {
+            if parent
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("generation-"))
+            {
+                retained.insert(parent.canonicalize()?);
+                break;
+            }
+        }
+    }
+    let mut roots: Vec<_> = lsp_catalog::CATALOG
+        .iter()
+        .map(|entry| (data.join("packages").join(entry.id), entry.id))
+        .collect();
+    roots.push((data.join("runtimes/node"), "node"));
+    for (root, owner) in roots {
+        if !root.exists() {
+            continue;
+        }
+        let root = root.canonicalize()?;
+        for entry in std::fs::read_dir(&root)? {
+            check(cancel)?;
+            let path = entry?.path();
+            let metadata = std::fs::symlink_metadata(&path)?;
+            if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                continue;
+            }
+            let canonical = path.canonicalize()?;
+            ensure!(
+                canonical.parent() == Some(root.as_path()),
+                "Cleanup target escaped generation root"
+            );
+            if retained.contains(&canonical)
+                || std::fs::read_to_string(path.join(".filavim-owned"))
+                    .ok()
+                    .as_deref()
+                    != Some(owner)
+            {
+                continue;
+            }
+            let lease = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(generation_lease_path(&path)?)?;
+            if lease.try_lock().is_err() {
+                report("Generation is in use; retained for later cleanup");
+                continue;
+            }
+            // Rename while the lease is held prevents new clients from opening it.
+            let garbage = tempfile::Builder::new()
+                .prefix("cleanup-")
+                .tempdir_in(&root)?;
+            let destination = garbage.path().join("generation");
+            std::fs::rename(&path, &destination)?;
+            drop(lease);
+            garbage.close()?;
+        }
+    }
+    Ok(())
+}
+
+/// Hold managed generations against cleanup for the lifetime of a server process.
+pub(crate) fn generation_leases(command: &Path, args: &[String]) -> Result<Vec<std::fs::File>> {
+    let mut directories = BTreeSet::new();
+    for path in std::iter::once(command).chain(args.iter().map(Path::new)) {
+        for parent in path.ancestors() {
+            if parent.join(".filavim-owned").is_file() {
+                directories.insert(parent.to_path_buf());
+                break;
+            }
+        }
+    }
+    directories
+        .into_iter()
+        .map(|directory| {
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(generation_lease_path(&directory)?)?;
+            file.try_lock_shared()
+                .context("Managed generation is being removed; refresh language tools")?;
+            Ok(file)
+        })
+        .collect()
+}
+
+fn generation_lease_path(directory: &Path) -> Result<PathBuf> {
+    let name = directory
+        .file_name()
+        .context("Generation has no name")?
+        .to_string_lossy();
+    Ok(directory
+        .parent()
+        .context("Generation has no parent")?
+        .join(format!(".{name}.lease")))
+}
+
 fn execute(
     data: &Path,
     workspace: &Path,
@@ -1380,6 +1501,41 @@ fn execute(
     };
     let mut store = load(data)?;
     match operation {
+        Operation::RepairRuntime => {
+            let old_pointer = std::fs::read(data.join("runtimes/node/current.json")).ok();
+            let (node, _) = managed::download_node(data, cancel, report)?;
+            let result = (|| -> Result<()> {
+                for (id, installation) in
+                    store.installed.iter_mut().chain(store.previous.iter_mut())
+                {
+                    if !matches!(
+                        lsp_catalog::entry(id).context("Unknown receipt")?.method,
+                        Method::Npm(_)
+                    ) {
+                        continue;
+                    }
+                    safe_directory(data, id, &installation.directory)?;
+                    installation.launch.command = node.clone();
+                    probe(
+                        lsp_catalog::entry(id).unwrap(),
+                        &installation.launch,
+                        cancel,
+                    )?;
+                }
+                check(cancel)?;
+                save(data, &store)
+            })();
+            if let Err(error) = result {
+                if let Some(pointer) = old_pointer {
+                    crate::files::save(
+                        &data.join("runtimes/node/current.json"),
+                        &ropey::Rope::from_str(std::str::from_utf8(&pointer)?),
+                    )?;
+                }
+                return Err(error).context("Runtime repair failed; server receipts preserved");
+            }
+        }
+        Operation::Cleanup => cleanup(data, &store, cancel, report)?,
         Operation::TrustWorkspace(trusted) => {
             let root = workspace
                 .canonicalize()
@@ -1429,23 +1585,10 @@ fn execute(
             if i.directory.exists() {
                 safe_directory(data, &id, &i.directory)?;
             }
-            let parent = i.directory.parent().context("No installation parent")?;
-            for generation in std::fs::read_dir(parent)? {
-                let p = generation?.path();
-                safe_directory(data, &id, &p)?;
-                let started = Instant::now();
-                loop {
-                    check(cancel)?;
-                    match std::fs::remove_dir_all(&p) {
-                        Ok(())=>break,
-                        Err(_) if started.elapsed()<Duration::from_secs(3)=>std::thread::sleep(Duration::from_millis(100)),
-                        Err(e)=>return Err(e).with_context(||format!("Files are in use: {}. Stop other Filavim instances and retry Uninstall.",p.display())),
-                    }
-                }
-            }
             store.installed.remove(&id);
             store.previous.remove(&id);
             save(data, &store)?;
+            cleanup(data, &store, cancel, report)?;
         }
         Operation::Configure {
             workspace: local,
@@ -1592,6 +1735,106 @@ fn probe(entry: &Entry, launch: &Launch, cancel: &AtomicBool) -> Result<()> {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    #[ignore = "downloads real JSON server and Node runtime in an isolated directory"]
+    fn real_runtime_repair_preserves_server_and_rollback_receipts() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("project");
+        std::fs::create_dir(&workspace).unwrap();
+        let data = temp.path().join("tools");
+        let cancel = AtomicBool::new(false);
+        let report = |message: &str| eprintln!("{message}");
+        for _ in 0..2 {
+            execute(
+                &data,
+                &workspace,
+                &BTreeSet::new(),
+                Operation::Install("json-language-server".into()),
+                &cancel,
+                &report,
+            )
+            .unwrap();
+        }
+        let before = load(&data).unwrap();
+        let package = before.installed["json-language-server"].directory.clone();
+        execute(
+            &data,
+            &workspace,
+            &BTreeSet::new(),
+            Operation::RepairRuntime,
+            &cancel,
+            &report,
+        )
+        .unwrap();
+        let repaired = load(&data).unwrap();
+        assert_eq!(
+            repaired.installed["json-language-server"].directory,
+            package
+        );
+        assert_ne!(
+            repaired.installed["json-language-server"].launch.command,
+            before.installed["json-language-server"].launch.command
+        );
+        assert_eq!(
+            repaired.previous["json-language-server"].launch.command,
+            repaired.installed["json-language-server"].launch.command
+        );
+        execute(
+            &data,
+            &workspace,
+            &BTreeSet::new(),
+            Operation::Rollback("json-language-server".into()),
+            &cancel,
+            &report,
+        )
+        .unwrap();
+        execute(
+            &data,
+            &workspace,
+            &BTreeSet::new(),
+            Operation::Remove("json-language-server".into()),
+            &cancel,
+            &report,
+        )
+        .unwrap();
+        assert!(load(&data).unwrap().installed.is_empty());
+        assert!(!package.exists());
+    }
+    #[test]
+    fn cleanup_preserves_receipts_and_process_leases() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("packages/rust-analyzer");
+        let active = root.join("generation-active");
+        let unused = root.join("generation-unused");
+        let leased = root.join("generation-leased");
+        for path in [&active, &unused, &leased] {
+            std::fs::create_dir_all(path).unwrap();
+            std::fs::write(path.join(".filavim-owned"), "rust-analyzer").unwrap();
+            std::fs::write(path.join("server"), "fixture").unwrap();
+        }
+        let mut store = Store::default();
+        store.installed.insert(
+            "rust-analyzer".into(),
+            Installation {
+                directory: active.clone(),
+                version: "fixture".into(),
+                source: "fixture".into(),
+                launch: Launch {
+                    command: active.join("server"),
+                    args: Vec::new(),
+                },
+            },
+        );
+        let leases = generation_leases(&leased.join("server"), &[]).unwrap();
+        cleanup(temp.path(), &store, &AtomicBool::new(false), &|_| {}).unwrap();
+        assert!(active.exists());
+        assert!(leased.exists());
+        assert!(!unused.exists());
+        drop(leases);
+        cleanup(temp.path(), &store, &AtomicBool::new(false), &|_| {}).unwrap();
+        assert!(!leased.exists());
+        assert!(active.exists());
+    }
 
     fn real_editor_navigation(
         services: &mut crate::gui::services::Services,

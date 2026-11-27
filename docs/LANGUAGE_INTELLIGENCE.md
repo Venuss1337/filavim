@@ -94,12 +94,20 @@ copy without removing the active one. **Roll back** (Ctrl-B) checks the previous
 managed generation in an empty temporary project, then swaps the active and
 previous receipts atomically. Failed validation retains the active receipt.
 
-Eligible rollback history is one generation. Older generation files remain on
-disk because another editor instance may still be using them. Shared Node
-generations are retained. Cross-process generation leases, dependency-aware
-cleanup and explicit runtime-only repair are still pending. Reinstall can recover
-a server using a damaged managed Node fallback by resolving a usable runtime
-during staging. Download caches used by npm are temporary.
+Eligible rollback history is one generation. **Clean unused tools** removes owned generations outside the active and rollback
+receipts, skipping generations with a process lease. Runtime dependencies are
+derived from the launch paths in both receipt sets. The currently selected Node
+runtime is retained as the fallback even when no server uses it. Generations
+created before runtime ownership markers were introduced remain on disk.
+
+**Repair Node runtime** downloads a new managed Node generation, probes the
+installed and rollback npm servers against it, and publishes all updated launch
+paths in one receipt write. A failed probe preserves server receipts and restores
+the preceding runtime pointer when present. Uninstall removes receipt ownership
+before cleanup so interruption cannot leave an active receipt pointing to a
+partly deleted generation. Concurrent manager mutations share the existing lock.
+Process leases cover new server processes. Processes started by older editor
+versions cannot participate in this lease protocol. Download caches used by npm are temporary.
 
 ## Features and current limits
 
@@ -202,3 +210,11 @@ induce network interruption or runtime corruption in the real installations.
 
 Milestone 4.2 remains open for the remaining qualification and infrastructure
 items above.
+
+
+The current cleanup regression covers active receipt retention, an unused
+generation, a live process lease, and cleanup after releasing that lease. The
+runtime repair path and real-package interruption matrix still require acceptance.
+Milestone 4.2 remains incomplete until those tests and descendant-process ownership
+are qualified. The additional catalog candidates remain deferred with the
+distribution and runtime blockers listed above.

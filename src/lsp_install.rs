@@ -281,6 +281,14 @@ pub(super) fn node(
         return Ok((node, cli));
     }
     check(cancel)?;
+    download_node(data, cancel, report)
+}
+
+pub(super) fn download_node(
+    data: &Path,
+    cancel: &AtomicBool,
+    report: &impl Fn(&str),
+) -> Result<(PathBuf, PathBuf)> {
     report("Resolving managed Node 24 LTS runtime");
     let releases = json_url("https://nodejs.org/dist/index.json", cancel)?;
     let release = releases
@@ -339,6 +347,7 @@ pub(super) fn node(
     let staging = tempfile::Builder::new()
         .prefix("generation-")
         .tempdir_in(&parent)?;
+    std::fs::write(staging.path().join(".filavim-owned"), "node")?;
     let archive = staging.path().join("download");
     download_progress(
         &format!("{base}/{filename}"),

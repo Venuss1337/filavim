@@ -31,6 +31,8 @@ enum Action {
     Install,
     Remove,
     Rollback,
+    RepairRuntime,
+    Cleanup,
     Enable,
     Select,
     Start,
@@ -171,6 +173,14 @@ impl EditorView {
         let operation = match action {
             Action::Refresh => Some(Operation::Refresh),
             Action::Updates => Some(Operation::CheckUpdates),
+            Action::RepairRuntime => {
+                self.manager_ui.confirmation = Some(Operation::RepairRuntime);
+                None
+            }
+            Action::Cleanup => {
+                self.manager_ui.confirmation = Some(Operation::Cleanup);
+                None
+            }
             Action::Trust => {
                 self.manager_ui.confirmation = Some(Operation::TrustWorkspace(
                     !self.services.manager.snapshot.trusted,
@@ -666,6 +676,20 @@ impl EditorView {
                     .px(px(8.))
                     .children(filters)
                     .child(self.manager_button(
+                        "lsp-repair-runtime",
+                        "Repair Node runtime",
+                        Action::RepairRuntime,
+                        !busy,
+                        cx,
+                    ))
+                    .child(self.manager_button(
+                        "lsp-cleanup",
+                        "Clean unused tools",
+                        Action::Cleanup,
+                        !busy,
+                        cx,
+                    ))
+                    .child(self.manager_button(
                         "lsp-trust",
                         if self.services.manager.snapshot.trusted {
                             "Revoke project trust"
@@ -761,6 +785,8 @@ impl EditorView {
         }
         if let Some(operation) = &self.manager_ui.confirmation {
             let message = match operation {
+                Operation::RepairRuntime => "Download and validate a fresh managed Node runtime for installed npm servers? Existing server receipts are preserved if validation fails.".into(),
+                Operation::Cleanup => "Remove unused owned generations? Active and rollback versions and leased generations are retained.".into(),
                 Operation::Install(id) => format!(
                     "Install/update {id}? This downloads and runs executable software from its official source. npm lifecycle scripts and pip source builds are disabled. Only Filavim's private tools directory is changed; runtimes are not installed. Existing managed version stays active if validation fails."
                 ),

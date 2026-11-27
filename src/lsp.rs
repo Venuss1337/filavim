@@ -540,6 +540,7 @@ fn serve(
 ) -> Result<()> {
     let executable = crate::setup::executable(&config.command)
         .with_context(|| format!("{} is missing; open :LspManager", config.command))?;
+    let _leases = crate::lsp_manager::generation_leases(&executable, &config.args)?;
     let mut command = Command::new(executable);
     command
         .args(&config.args)

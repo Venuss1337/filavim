@@ -1,4 +1,6 @@
-# Native migration checkpoint 1
+# Native foundation checkpoint 1
+
+Historical report. The checkout details, capabilities, and validation below describe that checkpoint.
 
 ## Workspace and scope
 

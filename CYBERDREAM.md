@@ -212,7 +212,7 @@ are not substitutes for those checks. No reference-screenshot fidelity is claime
 
 ## Manual checks
 
-Launch `C:\Users\filet\Desktop\filavim-gpui\target\release\filavim.exe`.
+From the repository root, launch `.\target\release\filavim.exe`.
 
 1. Open a Rust file using Ctrl+O. Verify strings/functions/types/booleans/comments and
    that Normal/Insert/Visual editing, save and undo/redo work as before.

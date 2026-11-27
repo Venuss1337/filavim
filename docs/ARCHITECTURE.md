@@ -1,6 +1,6 @@
 # Filavim native architecture
 
-This map describes the active GPUI frontend on `gpui-migration`. Start at the
+This map describes FilaVim on `main`. Start at the
 subsystem responsible for a change, inspect its types and callers, then follow
 only the relevant flow. [AGENTS.md](../AGENTS.md) defines engineering conventions;
 [TESTING.md](TESTING.md) defines verification and coverage limits.

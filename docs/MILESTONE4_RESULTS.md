@@ -1,5 +1,7 @@
 # Milestone 4 implementation results — Windows x64, 2026-11-16
 
+Historical report. The checkout details, capabilities, and validation below describe that checkpoint.
+
 Milestone 4 is **partial**, not complete. Existing unrelated checkout changes were
 preserved. No desktop automation or Computer Use was performed.
 

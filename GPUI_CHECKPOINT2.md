@@ -1,5 +1,7 @@
 # GPUI Checkpoint 2
 
+Historical report. The checkout details, capabilities, and validation below describe that checkpoint.
+
 Checkpoint 1 baseline: `48a8b89` on `gpui-migration`. Terminal baseline `dbcfd3a`
 on `master` remains unchanged. This is an implementation record; validation and
 final status are updated at completion.

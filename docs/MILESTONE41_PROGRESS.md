@@ -1,5 +1,7 @@
 # Milestone 4.1 — partial implementation
 
+Historical report. The checkout details, capabilities, and validation below describe that checkpoint.
+
 This is a progress record, not a completion report. Milestone 4.1 is unfinished.
 
 ## Changes

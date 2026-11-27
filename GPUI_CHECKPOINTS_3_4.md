@@ -1,5 +1,7 @@
 # Filavim — GPUI Checkpoints 3 and 4
 
+Historical report. The checkout details, capabilities, and validation below describe that checkpoint.
+
 ## Scope and repository state
 
 Worktree: `C:/Users/filet/Desktop/filavim-gpui`, branch `gpui-migration`.
@@ -181,7 +183,7 @@ source files are retained as before and are not compiled into the native app.
 Launch:
 
 ```powershell
-& 'C:\Users\filet\Desktop\filavim-gpui\target\release\filavim.exe'
+& '.\target\release\filavim.exe'
 ```
 
 Ctrl-O opens a file; Ctrl-Shift-O opens a project. Before testing, if earlier saved

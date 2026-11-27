@@ -1,8 +1,7 @@
-# Filavim GPUI — Checkpoints 3 + 4
+# FilaVim
 
-A native Rust/GPUI editor using Filavim's existing Ropey editing engine.
-This branch replaces the terminal frontend. It does not embed a terminal,
-WebView, browser, or backend server, and uses optional native cursor effects.
+FilaVim is a native modal code editor built with Rust, GPUI, and Ropey.
+Development takes place on the `main` branch.
 
 For development, start with [AGENTS.md](AGENTS.md) and the active source/ownership
 map in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Verification commands and
@@ -14,7 +13,6 @@ lifetime lines; command feedback stays in the command bar. See the
 durations, reduced motion and manual checks.
 
 ```powershell
-cd C:\Users\filet\Desktop\filavim-gpui
 cargo run --locked -- path\to\file.rs
 ```
 
@@ -34,23 +32,16 @@ The viewport uses embedded **Agave Nerd Font Mono**, native text shaping,
 line numbers, mouse positioning/Visual selection, two-axis scrolling and a
 native block/bar cursor with optional Neovide-inspired animated cursor smear. The default theme is Cyberdream Dark; Muted, Light and Rosé Pine Moon remain selectable.
 
-See [GPUI_CHECKPOINT2.md](GPUI_CHECKPOINT2.md) for the feature-parity inventory,
-commands, current validation, measurements and remaining manual checks.
-[GPUI_CHECKPOINT1.md](GPUI_CHECKPOINT1.md) records the native foundation and build tooling. Font provenance
-and licenses are in [assets/fonts](assets/fonts/README.md).
+FilaVim includes document tabs, an ignore-aware explorer, background syntax
+highlighting, project search, language intelligence, and Git commands.
+`:Commands` lists available commands. Try `:Files query`, `:Grep regex`,
+`:Diagnostics`, `:LspInfo`, or `:GitStatus`.
 
-The original terminal editor remains at `../filavim` on `master`, baseline
-`dbcfd3a`. This worktree is on `gpui-migration`. Historical terminal source and
-reports remain in this branch for reference; they are not part of the native
-build. The native frontend now includes document tabs, an ignore-aware explorer,
-background syntax highlighting, project search, LSP results/completion/diagnostics,
-and Git commands. `:Commands` lists common entry points; `:Files query`, `:Grep regex`,
-`:Diagnostics`, `:LspInfo`, `:GitStatus`, and `:set font_size=20` use the command bar.
-
-Full parity remains partial: splits/tab pages, MRU and filesystem-management dialogs,
-advanced completion/snippet workflows and Git hunk controls remain outstanding.
-External language servers must be installed separately.
-
+Splits, recent-file history, snippet browsing, and Git hunk controls remain
+outstanding. Font provenance and licenses are in [assets/fonts](assets/fonts/README.md).
+Historical checkpoints [1](GPUI_CHECKPOINT1.md), [2](GPUI_CHECKPOINT2.md), and
+[3–4](GPUI_CHECKPOINTS_3_4.md) record earlier development and validation.
+The retired terminal edition is preserved in Git history at `dbcfd3a`.
 
 LSP completion uses a caret-anchored floating menu: type in Insert mode or press
 Ctrl-Space; use arrows/Ctrl-N/P, Enter/Tab, and Escape. Documentation appears beside
@@ -73,7 +64,7 @@ implementation limits and the numbered manual walkthrough.
 ### Native language tools
 
 Use `:LspManager` for native installation, server preferences and workspace process controls.
-See [LSP_MANAGER.md](LSP_MANAGER.md) for the five tested installers, controls and limitations.
+See [Language intelligence and managed servers](docs/LANGUAGE_INTELLIGENCE.md) for the catalog, controls, and validation limits.
 
 Completion now uses persistent, locally filtered sessions rather than a typing-pause timer.
 Language-aware auto-pairs use owned-closer provenance and bypass paste/IME input.

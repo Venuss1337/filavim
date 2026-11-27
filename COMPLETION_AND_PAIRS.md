@@ -1,6 +1,6 @@
 # Instant completion and intelligent pairs
 
-Implemented on `gpui-migration`, without committing or changing the terminal worktree.
+This report records the completion and auto-pair implementation checkpoint.
 
 ## Reliability correction (2026-10-25)
 
@@ -188,7 +188,7 @@ In a perf build, `:CompletionPerfReset` resets samples and `:CompletionPerf` dis
 - Dynamic completion options are handled at the existing server scope; per-selector dynamic registrations are not advertised as a new fully implemented capability.
 - No multicursor engine exists. Physical keyboard/IME behavior, pixel-level popup flicker and actual presentation latency require manual Windows testing. Linux/macOS were not validated.
 
-Launch `C:\Users\filet\Desktop\filavim-gpui\target\release\filavim.exe`.
+From the repository root, launch `.\target\release\filavim.exe`.
 
 1. Open a Rust source file with Ctrl+O, press I, and type a partial identifier without pausing. Continue typing and press Backspace. Expect one steadily updated menu, no close/open flash, and stable selected identity where it still matches.
 2. Press Ctrl+Space, select with Down/Up, accept with Tab or Enter. Expect the right replacement and no raw snippet syntax. Escape closes the menu; a subsequent Escape returns to Normal mode.

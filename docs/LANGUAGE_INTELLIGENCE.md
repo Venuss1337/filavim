@@ -93,14 +93,20 @@ commands after successful edits. Multi-file text edits remain unsaved editor cha
 Ordered text document changes are evaluated sequentially, including repeated edits
 to one document, then applied as one undoable change per document. Previously closed
 files retain their verified disk baseline when opened by a workspace edit, so later
-saves still detect external changes. Annotation edits needing confirmation are
-rejected until an explicit approval workflow is available.
-The client does **not** advertise workspace/applyEdit; server requests receive an
-explicit negative response. File creation/deletion/rename resource edits remain
-unsupported. Commands requiring server-initiated applyEdit therefore cannot finish.
-Dynamic registration is limited to completion; other registrations are declined.
-Crashes are reported and require explicit restart; automatic crash retries are not
-implemented. These are material Milestone 4 gaps, not completion claims.
+saves still detect external changes.
+
+The client advertises and handles `workspace/applyEdit` and ordered file create,
+rename, and delete operations. Resource changes and annotations requiring consent
+use a native approval dialog. The planner checks paths and disk state before
+execution. Approved resource changes can reach disk during execution. Text edits
+remain unsaved and undoable in the affected buffers. If execution fails or is
+cancelled mid-plan, completed operations can remain on disk. The client reconciles
+the applied prefix and reports failures and any retained backup paths. The mock
+and filesystem suites exercise these paths. The earlier five-tool real-server run
+predates this implementation.
+
+Dynamic registration is limited to completion. Crashes require explicit restart.
+The Milestone 4 and 4.1 reports record earlier capability and validation states.
 
 ## Maintenance, tests and licensing
 

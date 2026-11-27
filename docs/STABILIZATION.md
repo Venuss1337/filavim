@@ -1,6 +1,6 @@
 # Stabilization implementation and verification — 2026-11-16
 
-Checkout: `C:/Users/filet/Desktop/filavim-gpui`, branch `gpui-migration`.
+The results below describe the November 16 stabilization checkpoint.
 Existing pending migration changes were preserved. No desktop/Computer Use tests
 or real-window smoke runs were performed during this task.
 

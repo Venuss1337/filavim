@@ -1,3 +1,8 @@
+//! Modal editing authority, independent of GPUI rendering and process I/O.
+//!
+//! Semantic actions come from [`crate::input::Keymap`]. Edits go through the
+//! owned [`Buffer`]; file/search/clipboard/quit effects leave as [`Request`] values
+//! for the frontend to execute. Legacy mode variants do not imply native UI support.
 use crate::{buffer::Buffer, config::Config, input::Action};
 use ropey::Rope;
 use std::{ops::Range, path::PathBuf};
@@ -28,8 +33,11 @@ impl Mode {
         }
     }
 }
+/// A frontend-owned side effect; save requests carry the exact Rope/state snapshot.
+/// Returning a request does not itself perform I/O or mark a document saved.
 pub enum Request {
     Save {
+        expected: crate::files::DiskState,
         path: PathBuf,
         text: Rope,
         state: u64,
@@ -48,6 +56,8 @@ pub enum Request {
     Clipboard(String),
     Quit,
 }
+/// One document's logical state, including mode, selection, undo-owning buffer and pairs.
+/// Native tabs retain this value rather than reconstructing it on each switch.
 pub struct Editor {
     pub buffer: Buffer,
     pub document_id: u64,
@@ -59,6 +69,11 @@ pub struct Editor {
     pub command: String,
     pub searching: bool,
     pub last_search: String,
+    pub search_options: crate::search::Options,
+    pub search_ranges: Vec<Range<usize>>,
+    pub search_revision: u64,
+    pub search_projected_revision: u64,
+    pub search_error: bool,
     pub message: String,
     pub error: bool,
     pub top: usize,
@@ -67,6 +82,8 @@ pub struct Editor {
     pub register: String,
     pub(crate) register_linewise: bool,
     pub config: Config,
+    pairs: crate::pairs::Pairs,
+    pub snippet: Option<crate::snippet::Session>,
 }
 impl Editor {
     pub fn new(config: Config) -> Self {
@@ -81,6 +98,11 @@ impl Editor {
             command: String::new(),
             searching: false,
             last_search: String::new(),
+            search_options: Default::default(),
+            search_ranges: Vec::new(),
+            search_revision: 0,
+            search_projected_revision: 0,
+            search_error: false,
             message: "W/A/S/D move · I insert · Ctrl-O open · Ctrl-S save · F1 help.".into(),
             error: false,
             top: 0,
@@ -89,6 +111,8 @@ impl Editor {
             register: String::new(),
             register_linewise: false,
             config,
+            pairs: Default::default(),
+            snippet: None,
         }
     }
     pub fn notify(&mut self, message: impl Into<String>, error: bool) {
@@ -97,6 +121,8 @@ impl Editor {
     }
     pub fn set_buffer(&mut self, buffer: Buffer) {
         self.buffer = buffer;
+        self.snippet = None;
+        self.pairs = Default::default();
         self.document_id += 1;
         self.dashboard = false;
         self.top = 0;
@@ -104,6 +130,9 @@ impl Editor {
         self.set_mode(Mode::Normal);
     }
     pub fn set_mode(&mut self, mode: Mode) {
+        if mode != Mode::Insert {
+            self.snippet = None;
+        }
         self.buffer.end_group();
         if mode == Mode::Insert {
             self.buffer.begin_group();
@@ -117,8 +146,115 @@ impl Editor {
     }
     /// Visual selections include the grapheme under the cursor.
     pub fn selection(&self) -> Option<Range<usize>> {
+        if let Some(range) = self
+            .snippet
+            .as_ref()
+            .and_then(|s| s.selection(&self.buffer))
+        {
+            return Some(range);
+        }
         self.anchor
             .map(|a| a.min(self.buffer.cursor)..self.buffer.next(a.max(self.buffer.cursor)))
+    }
+    pub fn replace_snippet(&mut self, range: Range<usize>, text: &str) -> bool {
+        let Some(mut snippet) = self.snippet.take() else {
+            return false;
+        };
+        if !snippet.replace(&mut self.buffer, range, text) {
+            return false;
+        }
+        self.snippet = Some(snippet);
+        true
+    }
+    pub fn snippet_next(&mut self, backwards: bool) -> bool {
+        let Some(mut snippet) = self.snippet.take() else {
+            return false;
+        };
+        match snippet.navigate(&mut self.buffer, backwards) {
+            Some(keep) => {
+                if keep {
+                    self.snippet = Some(snippet);
+                }
+                true
+            }
+            None => false,
+        }
+    }
+    pub fn completion_range(&mut self, range: Range<usize>, text: &str) -> Range<usize> {
+        self.pairs.completion_range(&self.buffer, range, text)
+    }
+    pub fn adopt_completion_pair(&mut self) {
+        let at = self.buffer.cursor;
+        if at > 0 && at < self.buffer.text.len_chars() {
+            let left = self.buffer.text.char(at - 1);
+            let right = self.buffer.text.char(at);
+            if matches!(
+                (left, right),
+                ('(', ')') | ('[', ']') | ('{', '}') | ('"', '"') | ('\'', '\'') | ('`', '`')
+            ) {
+                self.pairs.record(&self.buffer, at - 1, at, left, right);
+            }
+        }
+    }
+    /// Intentional single-character input only. Paste, IME and programmatic edits bypass this path.
+    pub fn type_character(&mut self, c: char) {
+        let range = self
+            .selection()
+            .unwrap_or(self.buffer.cursor..self.buffer.cursor);
+        if self.replace_snippet(range, &c.to_string()) {
+            return;
+        }
+        self.type_character_with_context(c, None);
+    }
+    pub fn type_character_with_context(&mut self, c: char, token: Option<crate::syntax::Token>) {
+        if self.mode != Mode::Insert && self.mode != Mode::Visual {
+            return;
+        }
+        self.dashboard = false;
+        self.pairs.sync(&self.buffer);
+        if self.mode == Mode::Insert
+            && self.config.pairs.enabled
+            && self.config.pairs.overtype
+            && self.pairs.overtype(&mut self.buffer, c)
+        {
+            return;
+        }
+        let blocked = matches!(token, Some(crate::syntax::Token::Comment))
+            && !self.config.pairs.in_comments
+            || matches!(token, Some(crate::syntax::Token::String)) && !self.config.pairs.in_strings;
+        let right = if blocked {
+            None
+        } else if self.selection().is_some() {
+            crate::pairs::surround_closer(&self.buffer, c, &self.config.pairs)
+        } else {
+            crate::pairs::closer(&self.buffer, c, &self.config.pairs)
+        };
+        if let Some(r) = self.selection() {
+            if self.config.pairs.surround
+                && let Some(right) = right
+            {
+                // Two Rope edits, one undo transaction; never copy the selected text.
+                self.buffer.end_group();
+                self.buffer.begin_group();
+                self.buffer.replace(r.end..r.end, &right.to_string());
+                self.buffer.replace(r.start..r.start, &c.to_string());
+                self.buffer.end_group();
+                self.buffer.cursor = r.start;
+                self.set_mode(Mode::Normal);
+                return;
+            }
+            self.buffer.replace(r, &c.to_string());
+            self.set_mode(Mode::Insert);
+            return;
+        }
+        if let Some(right) = right {
+            let at = self.buffer.cursor;
+            self.buffer.insert(&format!("{c}{right}"));
+            self.buffer.cursor = at + 1;
+            self.pairs.record(&self.buffer, at, at + 1, c, right);
+        } else {
+            self.buffer.insert(&c.to_string());
+        }
     }
     pub fn type_text(&mut self, text: &str) {
         match self.mode {
@@ -152,6 +288,26 @@ impl Editor {
     }
     pub fn act(&mut self, action: Action) -> Option<Request> {
         use Action::*;
+        if let Some(reason) = action.unavailable_reason() {
+            self.notify(reason, true);
+            return None;
+        }
+        if self.mode == Mode::Insert && self.snippet.is_some() {
+            if matches!(action, Backspace | Delete) {
+                let range = self.selection().unwrap_or_else(|| {
+                    if action == Backspace {
+                        self.buffer.previous(self.buffer.cursor)..self.buffer.cursor
+                    } else {
+                        self.buffer.cursor..self.buffer.next(self.buffer.cursor)
+                    }
+                });
+                if self.replace_snippet(range, "") {
+                    return None;
+                }
+            } else if matches!(action, Undo | Redo | Newline | Cut | Paste | Unindent) {
+                self.snippet = None;
+            }
+        }
         if self.help {
             if matches!(action, PageDown | Right | PageUp | Left) {
                 self.help_page = (self.help_page + 1) % 2;
@@ -247,7 +403,11 @@ impl Editor {
                     self.set_mode(Mode::Normal);
                 } else if action == Delete {
                     self.buffer.delete();
-                } else {
+                } else if !(self.mode == Mode::Insert
+                    && self.config.pairs.enabled
+                    && self.config.pairs.smart_delete
+                    && self.pairs.delete(&mut self.buffer))
+                {
                     self.buffer.backspace();
                 }
             }
@@ -256,17 +416,49 @@ impl Editor {
                 self.delete_line();
                 self.set_mode(Mode::Normal);
             }
-            Newline => self.buffer.newline(self.config.auto_indent),
+            Newline => {
+                let indent = self.indent_unit();
+                if !(self.mode == Mode::Insert
+                    && self.config.pairs.enabled
+                    && self.config.auto_indent
+                    && self.pairs.newline(&mut self.buffer, &indent))
+                {
+                    let row = self.buffer.row();
+                    let start = self.buffer.text.line_to_char(row);
+                    let prefix = self
+                        .buffer
+                        .text
+                        .slice(start..self.buffer.cursor)
+                        .to_string();
+                    let extension = self
+                        .buffer
+                        .path
+                        .as_ref()
+                        .and_then(|p| p.extension())
+                        .and_then(|e| e.to_str())
+                        .unwrap_or("");
+                    let extra = self.config.auto_indent
+                        && (prefix.trim_end().ends_with(['{', '[', '('])
+                            || matches!(extension, "py" | "pyw")
+                                && prefix.trim_end().ends_with(':')
+                                && !prefix.trim_start().starts_with('#'));
+                    self.buffer.newline(self.config.auto_indent);
+                    if extra {
+                        self.buffer.insert(&indent);
+                    }
+                }
+            }
             OpenBelow => {
                 self.dashboard = false;
                 self.set_mode(Mode::Insert);
                 self.buffer.end();
-                self.buffer.newline(self.config.auto_indent);
+                return self.act(Newline);
             }
+            Tab if self.selection().is_some() => self.indent_lines(false),
             Tab => {
-                if self.config.expand_tabs {
-                    let count = self.config.tab_width
-                        - self.buffer.column(self.config.tab_width) % self.config.tab_width;
+                let style = self.indentation();
+                if !style.tabs {
+                    let count = style.width - self.buffer.column(style.width) % style.width;
                     self.buffer.insert(&" ".repeat(count));
                 } else {
                     self.buffer.insert("\t");
@@ -330,6 +522,8 @@ impl Editor {
                     }
                 }
             }
+            ToggleComment => self.toggle_comment(),
+            Unindent => self.indent_lines(true),
             Save => return self.save(None, false),
             Quit => return self.execute_command("q"),
             New => return self.execute_command("new"),
@@ -377,6 +571,16 @@ impl Editor {
             Some(path) => {
                 self.notify("Saving…", false);
                 Some(Request::Save {
+                    expected: self
+                        .buffer
+                        .disk_state
+                        .clone()
+                        .filter(|_| {
+                            self.buffer.path.as_ref().is_some_and(|p| {
+                                crate::lsp::path_key(p) == crate::lsp::path_key(&path)
+                            })
+                        })
+                        .unwrap_or(crate::files::DiskState::Missing),
                     path,
                     text: self.buffer.text.clone(),
                     state: self.buffer.state(),

@@ -1,5 +1,7 @@
 # Filavim — Complete Default Keymap
 
+> Historical terminal-edition reference. This is not the native GPUI command list. For current native editing and safety commands, see [docs/EDITING_AND_SAFETY.md](docs/EDITING_AND_SAFETY.md). Split editors, terminals, recent-file history and the snippet browser are unavailable in GPUI.
+
 This reference matches the implemented Stage 3 defaults. User configuration can override them. Commands have a separate [complete reference](COMMANDS.md).
 
 ## Notation

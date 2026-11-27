@@ -40,6 +40,9 @@ fn measure(name: &str, count: usize, mut run: impl FnMut()) {
     run();
     ALLOCS.store(0, Ordering::Relaxed);
     BYTES.store(0, Ordering::Relaxed);
+    
+    
+    
     let at = Instant::now();
     for _ in 0..count {
         run();

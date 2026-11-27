@@ -1,0 +1,24 @@
+//! The full suite builds the tiny fixture once through Cargo. Direct cargo test
+//! without test-tools retains a self-contained, temporary rustc fallback.
+pub fn mock_executable(directory: &std::path::Path) -> std::path::PathBuf {
+    #[cfg(feature = "test-tools")]
+    {
+        let _ = directory;
+        std::path::PathBuf::from(env!("CARGO_BIN_EXE_filavim-mock-lsp"))
+    }
+    #[cfg(not(feature = "test-tools"))]
+    {
+        let executable = directory.join(if cfg!(windows) { "mock.exe" } else { "mock" });
+        let output = std::process::Command::new("rustc")
+            .args(["--edition=2024", "tests/fixtures/mock_lsp.rs", "-o"])
+            .arg(&executable)
+            .output()
+            .expect("rustc is required for the mock LSP fixture");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        executable
+    }
+}

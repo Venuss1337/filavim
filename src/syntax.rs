@@ -1,4 +1,9 @@
 //! Parsing is isolated from input/rendering; pending edits coalesce per document.
+//!
+//! A worker retains parser/tree state and returns byte-based highlight snapshots
+//! tagged with document, revision and generation. Callers validate that identity;
+//! [`project_highlights`] maps old spans through ordered edits for a current viewport
+//! while parsing catches up, rather than rewriting every retained span per keystroke.
 use ropey::Rope;
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -20,7 +25,14 @@ pub enum Token {
     Type,
     Function,
     Constant,
+    Boolean,
+    Operator,
+    Statement,
+    Preprocessor,
+    Parameter,
+    Property,
 }
+/// A syntax token over a half-open UTF-8 byte range, not buffer scalar positions.
 #[derive(Clone, Debug)]
 pub struct Highlight {
     pub range: Range<usize>,
@@ -61,7 +73,11 @@ pub fn language_name(path: Option<&Path>) -> &'static str {
         "rs" => "Rust",
         "py" | "pyw" => "Python",
         "js" | "jsx" | "mjs" | "cjs" => "JavaScript",
-        "json" => "JSON",
+        "ts" | "mts" | "cts" => "TypeScript",
+        "tsx" => "TSX",
+        "c" | "h" => "C",
+        "cpp" | "cc" | "cxx" | "hpp" | "hh" => "C++",
+        "json" | "jsonc" => "JSON",
         _ => "Plain text",
     }
 }
@@ -71,6 +87,10 @@ fn language(name: &str) -> Option<Language> {
         "Python" => tree_sitter_python::LANGUAGE.into(),
         "JavaScript" => tree_sitter_javascript::LANGUAGE.into(),
         "JSON" => tree_sitter_json::LANGUAGE.into(),
+        "TypeScript" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+        "TSX" => tree_sitter_typescript::LANGUAGE_TSX.into(),
+        "C" => tree_sitter_c::LANGUAGE.into(),
+        "C++" => tree_sitter_cpp::LANGUAGE.into(),
         _ => return None,
     })
 }
@@ -196,6 +216,9 @@ impl SyntaxService {
     pub fn request(&self, document: u64, revision: u64, text: Rope, path: Option<&Path>) {
         self.request_changes(document, revision, text, path, Vec::new());
     }
+    /// Supersede queued work for this document and return its new generation.
+    /// `changes` must be ordered edits leading to `text`; stale results still require
+    /// caller-side document/revision/generation validation before application.
     pub fn request_changes(
         &self,
         document: u64,
@@ -286,11 +309,26 @@ fn collect_cancellable(tree: &Tree, cancelled: &impl Fn() -> bool) -> Vec<Highli
             Some(Token::Number)
         } else if kind == "type_identifier" || kind == "primitive_type" {
             Some(Token::Type)
+        } else if ["true", "false", "True", "False"].contains(&kind) {
+            Some(Token::Boolean)
+        } else if kind == "attribute_item" || kind.starts_with("preproc_") {
+            Some(Token::Preprocessor)
         } else if [
-            "true", "false", "null", "none", "None", "True", "False", "self", "Self",
+            "if", "else", "for", "while", "match", "loop", "switch", "case", "break", "continue",
+            "try", "catch", "throw",
         ]
         .contains(&kind)
         {
+            Some(Token::Statement)
+        } else if !node.is_named()
+            && [
+                "=", "+", "-", "*", "/", "%", "==", "!=", ">", "<", ">=", "<=", "=>", "->", "&&",
+                "||", "!", "&", "|", "^", "~", "+=", "-=", "*=", "/=",
+            ]
+            .contains(&kind)
+        {
+            Some(Token::Operator)
+        } else if ["null", "none", "None", "self", "Self"].contains(&kind) {
             Some(Token::Constant)
         } else if !node.is_named() && kind.chars().next().is_some_and(char::is_alphabetic) {
             Some(Token::Keyword)
@@ -303,6 +341,14 @@ fn collect_cancellable(tree: &Tree, cancelled: &impl Fn() -> bool) -> Vec<Highli
             })
         {
             Some(Token::Function)
+        } else if matches!(kind, "field_identifier" | "property_identifier") {
+            Some(Token::Property)
+        } else if kind == "identifier"
+            && node
+                .parent()
+                .is_some_and(|p| p.kind().contains("parameter"))
+        {
+            Some(Token::Parameter)
         } else {
             None
         };
@@ -585,6 +631,44 @@ mod tests {
                 .map(|h| (&h.range, h.token))
                 .collect::<Vec<_>>()
         );
+    }
+    #[test]
+    fn target_language_grammars_parse_unicode_and_embedded_syntax() {
+        for (file, source) in [
+            (
+                "a.ts",
+                "interface Thing { name: string }; const café: Thing = { name: '日本' };",
+            ),
+            (
+                "a.tsx",
+                "const View = () => <div title=\"日本\">{42}</div>;",
+            ),
+            ("a.jsx", "const View = () => <div>é</div>;"),
+            ("a.c", "// 日本\nint main(void) { return 0; }"),
+            (
+                "a.cpp",
+                "struct Thing { int field; }; int main() { Thing x; return x.field; }",
+            ),
+            ("a.jsonc", "// comment\n{\"é\": true}"),
+        ] {
+            let mut parser = Parser::new();
+            let name = language_name(Some(Path::new(file)));
+            parser.set_language(&language(name).unwrap()).unwrap();
+            let tree = parser.parse(source, None).unwrap();
+            assert!(
+                !tree.root_node().has_error(),
+                "{file}: {}",
+                tree.root_node().to_sexp()
+            );
+            let highlights = collect(&tree);
+            assert!(!highlights.is_empty(), "{file}");
+            assert!(
+                highlights
+                    .iter()
+                    .all(|h| source.is_char_boundary(h.range.start)
+                        && source.is_char_boundary(h.range.end))
+            );
+        }
     }
     #[test]
     fn real_grammars_and_incremental_edits() {

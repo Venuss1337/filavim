@@ -1,4 +1,7 @@
-//! Protocol coordinate bookkeeping extracted unchanged from lsp.rs.
+//! Scalar-to-protocol coordinate bookkeeping for Buffer's edit journal.
+//!
+//! Positions use line-relative UTF-8/UTF-16/UTF-32 units. Native LSP response/edit
+//! conversion also exists in `lsp.rs`; GPUI IME conversion belongs to `gui::model`.
 use lsp_types::{Position, Range};
 use ropey::Rope;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

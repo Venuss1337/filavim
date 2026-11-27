@@ -10,16 +10,27 @@ build = false
 
 [features]
 default = ["native"]
-native = ["dep:gpui"]
+native = ["dep:gpui", "dep:image"]
+perf = []
+gpui-tests = ["native", "gpui/test-support", "test-tools"]
+test-tools = []
 
 [[bin]]
 name = "filavim"
 path = "src/main.rs"
 required-features = ["native"]
 
+[[bin]]
+name = "filavim-mock-lsp"
+path = "tests/fixtures/mock_lsp.rs"
+required-features = ["test-tools"]
+test = false
+bench = false
+
 [dependencies]
 anyhow = "1"
 gpui = { version = "=0.2.2", optional = true }
+image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "webp"], optional = true }
 ropey = "1.6"
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"
@@ -29,12 +40,37 @@ tempfile = "3"
 lsp-types = "0.97"
 tree-sitter = "0.26"
 bitflags = "2"
+serde_json = "1"
+url = "2"
+ignore = "0.4"
+globset = "0.4"
+nucleo = "0.5"
+grep-searcher = "0.1"
+grep-regex = "0.1"
+regex = "1"
+grep-matcher = "0.1"
+similar = "2"
+async-channel = "2"
+sha2 = "0.10"
+flate2 = "1"
+tar = "0.4"
+zip = { version = "4.6", default-features = false, features = ["deflate-flate2"] }
+tree-sitter-rust = "0.24"
+tree-sitter-python = "0.25"
+tree-sitter-javascript = "0.25"
+tree-sitter-json = "0.24"
+tree-sitter-typescript = "0.23.2"
+tree-sitter-c = "0.24.2"
+tree-sitter-cpp = "0.23.4"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_UI_Input_KeyboardAndMouse"] }
+windows-sys = { version = "0.61", features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_Storage_FileSystem"] }
+
+raw-window-handle = "0.6"
 
 [dev-dependencies]
 ttf-parser = "0.25"
+proptest = { version = "1", default-features = false, features = ["std"] }
 
 [[test]]
 name = "editor"
@@ -43,6 +79,7 @@ path = "tests/editor.rs"
 [[test]]
 name = "native"
 path = "tests/native.rs"
+required-features = ["native"]
 
 [profile.dev]
 debug = 0
@@ -51,3 +88,27 @@ debug = 0
 lto = "thin"
 codegen-units = 1
 strip = true
+
+[[test]]
+name="checkpoint2"
+path="tests/checkpoint2.rs"
+
+[[test]]
+name="floating"
+path="tests/floating.rs"
+
+[[test]]
+name = "lsp_manager"
+path = "tests/lsp_manager.rs"
+
+[[test]]
+name = "properties"
+path = "tests/properties.rs"
+
+[[test]]
+name = "performance"
+path = "tests/performance.rs"
+
+[[test]]
+name = "file_safety"
+path = "tests/file_safety.rs"

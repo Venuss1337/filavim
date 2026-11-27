@@ -1,4 +1,9 @@
 //! Terminal-independent text, grapheme navigation, and persistent undo snapshots.
+//!
+//! Editing positions are Rope character (Unicode scalar) indices; movement snaps
+//! to grapheme boundaries. Revisions advance through edits/undo, while saved-state
+//! identity tracks dirtiness independently. The bounded journal supports syntax,
+//! LSP synchronization and completion rebasing; missing history requires a fallback.
 use ropey::{Rope, RopeSlice};
 use std::{
     borrow::Cow,
@@ -36,11 +41,15 @@ pub struct TextChange {
     pub syntax: tree_sitter::InputEdit,
 }
 
+/// Authoritative document text and edit history, with bounded display checkpoints.
+/// Use mutation methods to keep revisions, undo, journals and caches consistent.
 pub struct Buffer {
     pub text: Rope,
     /// Cursor is a Unicode scalar index, always on a grapheme boundary.
     pub cursor: usize,
     pub path: Option<PathBuf>,
+    pub disk_state: Option<crate::files::DiskState>,
+    pub indentation: Option<crate::editing::Indentation>,
     pub newline: &'static str,
     pub revision: u64,
     pub last_change: Option<(usize, usize, usize)>,
@@ -84,8 +93,10 @@ impl Buffer {
             .unwrap_or("\n");
         Self {
             text,
+            indentation: None,
             cursor: 0,
             path,
+            disk_state: None,
             newline,
             revision: 0,
             last_change: None,
@@ -104,12 +115,18 @@ impl Buffer {
         }
     }
 
+    /// Recovery may contain an empty unsaved document, which still needs a save.
+    pub fn mark_recovered(&mut self) {
+        self.saved_state = u64::MAX;
+    }
     pub fn dirty(&self) -> bool {
         self.state != self.saved_state
     }
     pub fn state(&self) -> u64 {
         self.state
     }
+    /// Record the state actually written to disk, not necessarily the current state.
+    /// A save finishing after another edit must leave those newer edits dirty.
     pub fn mark_saved(&mut self, state: u64) {
         self.saved_state = state;
     }
@@ -215,6 +232,8 @@ impl Buffer {
     pub fn recent_changes(&self) -> Vec<TextChange> {
         self.changes.iter().cloned().collect()
     }
+    /// Return ordered changes after `revision`, or `None` if history is unavailable.
+    /// `Some([])` means up to date; `None` must not be treated as no changes.
     pub fn changes_since(&self, revision: u64) -> Option<Vec<TextChange>> {
         if revision == self.revision {
             return Some(Vec::new());
@@ -259,6 +278,9 @@ impl Buffer {
         self.revision += 1;
         self.preferred_column = None;
     }
+    /// Replace a valid half-open scalar range, recording undo, revision and journal.
+    /// The cursor moves after inserted text and snaps past any joined grapheme.
+    /// Callers supply in-bounds ranges; this is not a protocol-range validator.
     pub fn replace(&mut self, range: Range<usize>, text: &str) {
         if range.is_empty() && text.is_empty() {
             return;

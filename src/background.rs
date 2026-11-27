@@ -1,4 +1,9 @@
-//! A replaceable request slot, with cooperative cancellation and no input-thread joins.
+//! Coalescing workers, cooperative generations and UI wake delivery.
+//!
+//! [`LatestWorker`] replaces one pending job; [`KeyedWorker`] coalesces independent
+//! keys on one thread. Cancellation is cooperative, not thread interruption.
+//! Dropping a worker signals closure without joining on the input thread.
+//! [`WakeGuard`] installs the process-wide callback used by the current native view.
 use std::sync::{
     Arc, Condvar, Mutex,
     atomic::{AtomicU64, Ordering},
@@ -8,6 +13,8 @@ use std::thread;
 
 type WakeFn = std::sync::Arc<dyn Fn() + Send + Sync>;
 static WAKER: std::sync::Mutex<Option<WakeFn>> = std::sync::Mutex::new(None);
+/// Lifetime of the single global wake callback; dropping it clears that callback.
+/// This is not a registry of independent windows or subscribers.
 pub struct WakeGuard;
 impl WakeGuard {
     pub fn install(wake: WakeFn) -> Self {
@@ -39,6 +46,7 @@ struct Slot<J> {
     job: Option<(u64, J)>,
     closed: bool,
 }
+/// One replaceable pending job; only the current generation is returned by `poll`.
 pub struct LatestWorker<J, R> {
     slot: Arc<(Mutex<Slot<J>>, Condvar)>,
     current: Arc<AtomicU64>,
@@ -113,9 +121,9 @@ impl<J, R> Drop for LatestWorker<J, R> {
     }
 }
 
-/// One shared preparation thread, latest work per independent document/request.
-/// The per-key generation cancels running work without cancelling another server.
 type KeyedShared<K, J, R> = Arc<(Mutex<KeyedSlot<K, J, R>>, Condvar)>;
+/// One preparation thread with FIFO key scheduling and latest pending work per key.
+/// Per-key generations supersede work without cancelling unrelated documents/servers.
 pub struct KeyedWorker<K, J, R> {
     slot: KeyedShared<K, J, R>,
     generations: std::collections::BTreeMap<K, Arc<AtomicU64>>,
@@ -244,6 +252,8 @@ impl<K: Ord + Clone + Send + 'static, J: Send + 'static, R: Send + 'static> Keye
         slot.retired.push(Box::new(results));
         slot.ready.clear();
         slot.order.clear();
+        drop(slot);
+        self.slot.1.notify_one();
     }
 }
 impl<K, J, R> Drop for KeyedWorker<K, J, R> {

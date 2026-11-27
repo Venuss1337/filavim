@@ -1,4 +1,8 @@
-//! Native input/IO boundary around the existing editor; there is one document.
+//! Per-document input/IME adapter around the existing editor.
+//!
+//! [`super::documents::Documents`] owns multiple models; this model wraps exactly
+//! one editor. GPUI text-input offsets are UTF-16, whereas buffer positions are
+//! scalar indices. Composition state belongs here, not in a second text buffer.
 use crate::{
     buffer::Buffer,
     config::Config,
@@ -162,6 +166,14 @@ impl Model {
         } else {
             Cow::Borrowed(text)
         };
+        if !composing && self.editor.replace_snippet(r.clone(), &text) {
+            self.editor.dashboard = false;
+            self.ime_selection = None;
+            return;
+        }
+        if composing {
+            self.editor.snippet = None;
+        }
         self.editor.buffer.replace(r.clone(), &text);
         self.editor.dashboard = false;
         let end = r.start + text.chars().count();

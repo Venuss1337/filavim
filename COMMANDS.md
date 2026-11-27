@@ -1,5 +1,7 @@
 # Filavim — Complete Command Reference
 
+> Historical terminal-edition reference. This is not the native GPUI command list. For current native editing and safety commands, see [docs/EDITING_AND_SAFETY.md](docs/EDITING_AND_SAFETY.md). Split editors, terminals, recent-file history and the snippet browser are unavailable in GPUI.
+
 These are the commands currently implemented in the Stage 3 application, including aliases. For keyboard shortcuts, see the [complete keymap](KEYMAP.md).
 
 Press `:` from Normal or Visual mode, type a command, and press `Enter`. `Esc` cancels. Names are case-sensitive; only aliases explicitly listed below are supported. `[argument]` means optional; `<argument>` means required.

@@ -275,176 +275,133 @@ mod event_tests {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Action {
-    ClearInput,
-    Complete,
-    Hover,
-    Definition,
-    Implementation,
-    References,
-    RenameSymbol,
-    CodeActions,
-    FormatDocument,
-    SignatureHelp,
-    LspInfo,
-    Settings,
-    Setup,
-    GitStatus,
-    GitDiff,
-    GitStage,
-    GitUnstage,
-    Terminal,
-    Snippets,
-    Up,
-    Left,
-    Down,
-    Right,
-    WordBack,
-    WordForward,
-    Home,
-    End,
-    Top,
-    Bottom,
-    PageUp,
-    PageDown,
-    Insert,
-    Append,
-    Visual,
-    Normal,
-    Command,
-    Search,
-    Delete,
-    Backspace,
-    DeleteLine,
-    Newline,
-    OpenBelow,
-    Tab,
-    Undo,
-    Redo,
-    Copy,
-    Cut,
-    Paste,
-    Save,
-    Quit,
-    New,
-    Help,
-    Submit,
-    SearchNext,
-    Noop,
-    FindFiles,
-    LiveGrep,
-    RecentFiles,
-    Buffers,
-    Palette,
-    Projects,
-    Explorer,
-    SplitVertical,
-    SplitHorizontal,
-    FocusNext,
-    FocusPrevious,
-    GrowSplit,
-    ShrinkSplit,
-    CloseView,
-    CloseBuffer,
-    NextBuffer,
-    PreviousBuffer,
-    NewTab,
-    NextTab,
-    PreviousTab,
-    Refresh,
-    CreateFile,
-    CreateDirectory,
-    RenameFile,
-    DeleteFile,
-    ParentDirectory,
+// One source for semantic actions, names and enumeration. Adding an action
+// also requires updating the exhaustive native availability match below.
+macro_rules! action_registry {
+    ($($variant:ident => $name:literal),* $(,)?) => {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum Action { $($variant),* }
+        impl Action {
+            pub const ALL: &'static [Self] = &[$(Self::$variant),*];
+            pub fn name(self) -> &'static str { match self { $(Self::$variant => $name),* } }
+            pub fn parse(name: &str) -> Result<Self> {
+                match name { $($name => Ok(Self::$variant),)* _ => bail!("Unknown keybinding action: {name}") }
+            }
+        }
+    };
 }
+action_registry! {
+    ToggleComment => "toggle_comment",
+    Unindent => "unindent",
+    ClearInput => "clear_input",
+    Complete => "complete",
+    Hover => "hover",
+    Definition => "definition",
+    Implementation => "implementation",
+    References => "references",
+    RenameSymbol => "rename_symbol",
+    CodeActions => "code_actions",
+    FormatDocument => "format_document",
+    SignatureHelp => "signature_help",
+    LspInfo => "lsp_info",
+    Settings => "settings",
+    Setup => "setup",
+    GitStatus => "git_status",
+    GitDiff => "git_diff",
+    GitStage => "git_stage",
+    GitUnstage => "git_unstage",
+    Terminal => "terminal",
+    Snippets => "snippets",
+    Up => "up",
+    Left => "left",
+    Down => "down",
+    Right => "right",
+    WordBack => "word_back",
+    WordForward => "word_forward",
+    Home => "home",
+    End => "end",
+    Top => "top",
+    Bottom => "bottom",
+    PageUp => "page_up",
+    PageDown => "page_down",
+    Insert => "insert",
+    Append => "append",
+    Visual => "visual",
+    Normal => "normal",
+    Command => "command",
+    Search => "search",
+    Delete => "delete",
+    Backspace => "backspace",
+    DeleteLine => "delete_line",
+    Newline => "newline",
+    OpenBelow => "open_below",
+    Tab => "tab",
+    Undo => "undo",
+    Redo => "redo",
+    Copy => "copy",
+    Cut => "cut",
+    Paste => "paste",
+    Save => "save",
+    Quit => "quit",
+    New => "new",
+    Help => "help",
+    Submit => "submit",
+    SearchNext => "search_next",
+    Noop => "noop",
+    FindFiles => "find_files",
+    LiveGrep => "live_grep",
+    RecentFiles => "recent_files",
+    Buffers => "buffers",
+    Palette => "palette",
+    Projects => "projects",
+    Explorer => "explorer",
+    SplitVertical => "split_vertical",
+    SplitHorizontal => "split_horizontal",
+    FocusNext => "focus_next",
+    FocusPrevious => "focus_previous",
+    GrowSplit => "grow_split",
+    ShrinkSplit => "shrink_split",
+    CloseView => "close_view",
+    CloseBuffer => "close_buffer",
+    NextBuffer => "next_buffer",
+    PreviousBuffer => "previous_buffer",
+    NewTab => "new_tab",
+    NextTab => "next_tab",
+    PreviousTab => "previous_tab",
+    Refresh => "refresh",
+    CreateFile => "create_file",
+    CreateDirectory => "create_directory",
+    RenameFile => "rename_file",
+    DeleteFile => "delete_file",
+    ParentDirectory => "parent_directory",
+}
+
 impl Action {
-    pub fn parse(name: &str) -> Result<Self> {
-        Ok(match name {
-            "clear_input" => Self::ClearInput,
-            "complete" => Self::Complete,
-            "hover" => Self::Hover,
-            "definition" => Self::Definition,
-            "implementation" => Self::Implementation,
-            "references" => Self::References,
-            "rename_symbol" => Self::RenameSymbol,
-            "code_actions" => Self::CodeActions,
-            "format_document" => Self::FormatDocument,
-            "signature_help" => Self::SignatureHelp,
-            "lsp_info" => Self::LspInfo,
-            "settings" => Self::Settings,
-            "setup" => Self::Setup,
-            "git_status" => Self::GitStatus,
-            "git_diff" => Self::GitDiff,
-            "git_stage" => Self::GitStage,
-            "git_unstage" => Self::GitUnstage,
-            "terminal" => Self::Terminal,
-            "snippets" => Self::Snippets,
-            "up" => Self::Up,
-            "left" => Self::Left,
-            "down" => Self::Down,
-            "right" => Self::Right,
-            "word_back" => Self::WordBack,
-            "word_forward" => Self::WordForward,
-            "home" => Self::Home,
-            "end" => Self::End,
-            "top" => Self::Top,
-            "bottom" => Self::Bottom,
-            "page_up" => Self::PageUp,
-            "page_down" => Self::PageDown,
-            "insert" => Self::Insert,
-            "append" => Self::Append,
-            "visual" => Self::Visual,
-            "normal" => Self::Normal,
-            "command" => Self::Command,
-            "search" => Self::Search,
-            "delete" => Self::Delete,
-            "backspace" => Self::Backspace,
-            "delete_line" => Self::DeleteLine,
-            "newline" => Self::Newline,
-            "open_below" => Self::OpenBelow,
-            "tab" => Self::Tab,
-            "undo" => Self::Undo,
-            "redo" => Self::Redo,
-            "copy" => Self::Copy,
-            "cut" => Self::Cut,
-            "paste" => Self::Paste,
-            "save" => Self::Save,
-            "quit" => Self::Quit,
-            "new" => Self::New,
-            "help" => Self::Help,
-            "submit" => Self::Submit,
-            "search_next" => Self::SearchNext,
-            "noop" => Self::Noop,
-            "find_files" => Self::FindFiles,
-            "live_grep" => Self::LiveGrep,
-            "recent_files" => Self::RecentFiles,
-            "buffers" => Self::Buffers,
-            "palette" => Self::Palette,
-            "projects" => Self::Projects,
-            "explorer" => Self::Explorer,
-            "split_vertical" => Self::SplitVertical,
-            "split_horizontal" => Self::SplitHorizontal,
-            "focus_next" => Self::FocusNext,
-            "focus_previous" => Self::FocusPrevious,
-            "grow_split" => Self::GrowSplit,
-            "shrink_split" => Self::ShrinkSplit,
-            "close_view" => Self::CloseView,
-            "close_buffer" => Self::CloseBuffer,
-            "next_buffer" => Self::NextBuffer,
-            "previous_buffer" => Self::PreviousBuffer,
-            "new_tab" => Self::NewTab,
-            "next_tab" => Self::NextTab,
-            "previous_tab" => Self::PreviousTab,
-            "refresh" => Self::Refresh,
-            "create_file" => Self::CreateFile,
-            "create_directory" => Self::CreateDirectory,
-            "rename_file" => Self::RenameFile,
-            "delete_file" => Self::DeleteFile,
-            "parent_directory" => Self::ParentDirectory,
-            _ => bail!("Unknown keybinding action: {name}"),
-        })
+    pub fn unavailable_reason(self) -> Option<&'static str> {
+        use Action::*;
+        match self {
+            SplitVertical | SplitHorizontal | FocusNext | FocusPrevious | GrowSplit
+            | ShrinkSplit => Some("Split editors are not available in the native application yet"),
+            Terminal => Some("The native terminal is planned for a later milestone"),
+            Snippets => Some("The native snippet browser is not available yet"),
+            RecentFiles => Some("Native recent-file history is not available yet"),
+            NewTab | NextTab | PreviousTab => {
+                Some("Tab-page actions are not available; use document buffer actions")
+            }
+            CloseView | Refresh | CreateFile | CreateDirectory | RenameFile | DeleteFile
+            | ParentDirectory => {
+                Some("This action has no native keyboard implementation; use the explorer controls")
+            }
+            ToggleComment | Unindent | ClearInput | Complete | Hover | Definition
+            | Implementation | References | RenameSymbol | CodeActions | FormatDocument
+            | SignatureHelp | LspInfo | Settings | Setup | GitStatus | GitDiff | GitStage
+            | GitUnstage | Up | Left | Down | Right | WordBack | WordForward | Home | End | Top
+            | Bottom | PageUp | PageDown | Insert | Append | Visual | Normal | Command | Search
+            | Delete | Backspace | DeleteLine | Newline | OpenBelow | Tab | Undo | Redo | Copy
+            | Cut | Paste | Save | Quit | New | Help | Submit | SearchNext | Noop | FindFiles
+            | LiveGrep | Buffers | Palette | Projects | Explorer | CloseBuffer | NextBuffer
+            | PreviousBuffer => None,
+        }
     }
 }
 
@@ -608,6 +565,10 @@ impl Keymap {
         ] {
             map.bind(Mode::Explorer, key, action);
         }
+        for mode in [Mode::Normal, Mode::Insert, Mode::Visual] {
+            map.bind(mode, "ctrl-/", Action::ToggleComment);
+            map.bind(mode, "shift-tab", Action::Unindent);
+        }
         for (mode, bindings) in &config.keybindings {
             let mode = match mode.as_str() {
                 "normal" => Mode::Normal,
@@ -621,13 +582,19 @@ impl Keymap {
             };
             for (key, action) in bindings {
                 validate_key(key)?;
-                map.bind(mode, key, Action::parse(action)?);
+                let action = Action::parse(action)?;
+                if let Some(reason) = action.unavailable_reason() {
+                    bail!("Unsupported keybinding action: {reason}");
+                }
+                map.bind(mode, key, action);
             }
         }
         Ok(map)
     }
     fn bind(&mut self, mode: Mode, key: &str, action: Action) {
-        self.bindings.insert((mode, key.to_owned()), action);
+        if action.unavailable_reason().is_none() {
+            self.bindings.insert((mode, key.to_owned()), action);
+        }
     }
     pub fn clear(&mut self) {
         self.pending.clear();
@@ -742,4 +709,69 @@ pub fn key_name(event: KeyEvent) -> String {
         _ => "unsupported".into(),
     });
     name
+}
+
+#[cfg(test)]
+mod availability_tests {
+    use super::*;
+    #[test]
+    fn unsupported_defaults_are_unbound_and_user_assignments_are_rejected() {
+        let mut config = Config::default();
+        config
+            .keybindings
+            .entry("normal".into())
+            .or_default()
+            .insert("ctrl-t".into(), "terminal".into());
+        assert!(
+            Keymap::new(&config)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("Unsupported")
+        );
+    }
+    #[test]
+    fn explicit_unavailable_actions_explain_the_missing_feature() {
+        let mut editor = crate::editor::Editor::new(Config::default());
+        for action in [
+            Action::Terminal,
+            Action::SplitVertical,
+            Action::Snippets,
+            Action::RecentFiles,
+            Action::NewTab,
+        ] {
+            assert!(action.unavailable_reason().is_some());
+            editor.act(action);
+            assert!(editor.error);
+            assert!(!editor.message.is_empty());
+        }
+    }
+}
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+    #[test]
+    fn every_registered_action_round_trips_and_unsupported_assignments_fail_validation() {
+        let mut seen = std::collections::HashSet::new();
+        for &action in Action::ALL {
+            assert!(seen.insert(action.name()));
+            assert_eq!(Action::parse(action.name()).unwrap(), action);
+            let mut config = Config::default();
+            config
+                .keybindings
+                .entry("normal".into())
+                .or_default()
+                .insert("ctrl-q".into(), action.name().into());
+            let result = Keymap::new(&config);
+            if let Some(reason) = action.unavailable_reason() {
+                assert!(result.err().unwrap().to_string().contains(reason));
+                let mut editor = crate::editor::Editor::new(Config::default());
+                editor.act(action);
+                assert!(editor.error, "{} was silent", action.name());
+            } else {
+                assert!(result.is_ok(), "supported {} was rejected", action.name());
+            }
+        }
+    }
 }

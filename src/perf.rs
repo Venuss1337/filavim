@@ -15,6 +15,7 @@ struct Recorder {
     trace: Vec<(&'static str, String, Instant)>,
     depth: usize,
     max_depth: usize,
+    counters: BTreeMap<&'static str, u64>,
 }
 #[cfg(feature = "perf")]
 static RECORDER: OnceLock<Mutex<Recorder>> = OnceLock::new();
@@ -96,6 +97,9 @@ pub fn report() -> String {
         r.max_depth,
         r.trace.len()
     );
+    for (name, count) in &r.counters {
+        text.push_str(&format!("{name}: count={count}\n"));
+    }
     for (name, samples) in &r.samples {
         if samples.is_empty() {
             continue;
@@ -128,4 +132,15 @@ pub fn samples(stage: &'static str) -> Vec<u64> {
 #[cfg(feature = "perf")]
 pub fn traces() -> Vec<(&'static str, String, Instant)> {
     recorder().lock().unwrap().trace.clone()
+}
+
+#[inline]
+pub fn count(stage: &'static str, amount: u64) {
+    #[cfg(feature = "perf")]
+    {
+        let mut r = recorder().lock().unwrap();
+        *r.counters.entry(stage).or_default() += amount;
+    }
+    #[cfg(not(feature = "perf"))]
+    let _ = (stage, amount);
 }

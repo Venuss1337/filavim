@@ -1,6 +1,11 @@
 //! A clipped shaping string plus explicit scalar-to-shaped-byte boundaries.
+//!
+//! Tabs are expanded and control characters sanitized for display only; the Rope
+//! is unchanged. Mapping methods bridge document scalar positions and UTF-8 bytes
+//! in the shaped fragment. Pixel geometry remains the native view's responsibility.
 use crate::buffer::{Buffer, grapheme_width, rope_graphemes};
 
+/// Horizontally clipped row text, with absolute scalar/fragment-byte boundary pairs.
 #[derive(Clone, Debug)]
 pub struct VisibleLine {
     pub row: usize,

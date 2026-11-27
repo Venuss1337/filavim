@@ -240,6 +240,9 @@ printf 'Fira Code installed. Choose it in your terminal font settings.\n'
     }
 }
 pub fn save_setting(path: &Path, key: &str, value: &str) -> Result<crate::config::Config> {
+    if matches!(key, "cursor.pixiedust" | "cursor.intensity") {
+        bail!("Particle settings are retired; use cursor.smear and cursor.trail_size");
+    }
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),

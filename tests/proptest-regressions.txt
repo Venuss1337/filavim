@@ -1,0 +1,2 @@
+# Proptest automatically records shrunk failure seeds here. Keep relevant failures
+# under version control, and accompany confirmed bugs with named regression tests.

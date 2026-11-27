@@ -1,27 +1,60 @@
 name: Rust
 on: [push, pull_request]
+permissions:
+  contents: read
+concurrency:
+  group: rust-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  CARGO_BUILD_JOBS: 2
+  RUST_TEST_THREADS: 2
 jobs:
-  check:
+  core:
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - name: Linux GPUI libraries
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libwayland-dev libxkbcommon-x11-dev libssl-dev libxcb1-dev libxcb-xkb-dev libx11-xcb-dev libvulkan-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets --locked -- -D warnings
-      - run: cargo test --locked
-      - run: cargo test --no-default-features --locked
-      - name: Windows release
-        if: runner.os == 'Windows'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: core-${{ runner.os }}
+      - shell: pwsh
+        run: ./scripts/test.ps1 -Mode Full -CoreOnly
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: core-reports-${{ runner.os }}
+          path: |
+            target/test-reports/
+            tests/proptest-regressions.txt
+          if-no-files-found: ignore
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: gpui-windows
+      - shell: pwsh
+        run: ./scripts/test.ps1 -Mode Full
+      - name: Native release compile (no interactive desktop required)
         shell: pwsh
         run: ./scripts/windows-build.ps1 -Release
-      - name: Unix release
-        if: runner.os != 'Windows'
-        run: cargo build --release --locked
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-test-reports
+          path: |
+            target/test-reports/
+            tests/proptest-regressions.txt
+          if-no-files-found: ignore

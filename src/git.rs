@@ -134,8 +134,8 @@ fn git(root: &Path, args: &[&str]) -> Result<String> {
     )
 }
 fn relative(root: &Path, path: &Path) -> Result<String> {
-    let root = crate::workspace::display_path(root);
-    let path = crate::workspace::display_path(path);
+    let root = crate::paths::display_path(root);
+    let path = crate::paths::display_path(path);
     Path::new(&path)
         .strip_prefix(&root)
         .map(|p| p.to_string_lossy().replace('\\', "/"))

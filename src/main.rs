@@ -1,15 +1,22 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args_os().skip(1).peekable();
-    if args.peek().is_some_and(|a| a == "--smoke-test") {
-        args.next();
+    if args
+        .peek()
+        .is_some_and(|a| a == "--smoke-test" || a == "--lsp-smoke-test")
+    {
+        let lsp = args.next().is_some_and(|a| a == "--lsp-smoke-test");
         let report = args
             .next()
             .ok_or_else(|| anyhow::anyhow!("--smoke-test REPORT FILE"))?;
         let path = args
             .next()
             .ok_or_else(|| anyhow::anyhow!("--smoke-test REPORT FILE"))?;
-        return filavim::gui::smoke(path.into(), report.into());
+        return if lsp {
+            filavim::gui::smoke_lsp(path.into(), report.into())
+        } else {
+            filavim::gui::smoke(path.into(), report.into())
+        };
     }
     let mut path = None;
     let mut positional = false;
@@ -24,7 +31,7 @@ fn main() -> anyhow::Result<()> {
         }
         if !positional && (arg == "--help" || arg == "-h") {
             println!(
-                "Filavim GPUI\nUsage: filavim [FILE]\nCtrl-O opens a file. Ctrl-S saves. :e/:w/:q use existing commands."
+                "Filavim GPUI\nUsage: filavim [FILE|DIRECTORY]\nCtrl-O opens a file. Ctrl-S saves. :e/:w/:q use existing commands."
             );
             return Ok(());
         }
@@ -32,7 +39,9 @@ fn main() -> anyhow::Result<()> {
             anyhow::bail!("Unknown option: {}", arg.to_string_lossy());
         }
         if path.replace(std::path::PathBuf::from(arg)).is_some() {
-            anyhow::bail!("Checkpoint 1 opens one file at a time");
+            anyhow::bail!(
+                "Supply one initial file or project; open additional files from the editor"
+            );
         }
     }
     filavim::gui::run(path, filavim::config::Config::load()?)

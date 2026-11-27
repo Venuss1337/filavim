@@ -1,4 +1,12 @@
-//! Bounded JSON-RPC transport and lazy external server lifecycle, off the UI thread.
+//! Framed JSON-RPC, document synchronization and external server lifecycle.
+//!
+//! [`Client`] queues commands for process I/O threads and emits [`Event`] values;
+//! it does not own editor state or popup policy. Native request validation/routing
+//! lives in [`crate::gui::services`]. Message sizes and logs have limits, but the
+//! instrumented queues are not capacity-bounded; document updates coalesce only
+//! where request/notification ordering barriers permit it.
+#[path = "lsp_workspace.rs"]
+pub mod workspace;
 use anyhow::{Context, Result, anyhow, bail};
 use lsp_types::{Position, Range, TextEdit};
 use ropey::Rope;
@@ -24,6 +32,7 @@ pub struct ServerConfig {
     pub enabled: bool,
     #[serde(skip_serializing_if = "Value::is_null")]
     pub initialization_options: Value,
+    pub settings: Value,
 }
 impl Default for ServerConfig {
     fn default() -> Self {
@@ -34,6 +43,7 @@ impl Default for ServerConfig {
             languages: Vec::new(),
             enabled: true,
             initialization_options: Value::Null,
+            settings: json!({}),
         }
     }
 }
@@ -96,13 +106,13 @@ impl Default for Config {
 pub fn language(path: &Path) -> Option<&'static str> {
     match path.extension()?.to_str()? {
         "rs" => Some("rust"),
-        "py" | "pyi" => Some("python"),
-        "ts" => Some("typescript"),
+        "py" | "pyi" | "pyw" => Some("python"),
+        "ts" | "mts" | "cts" => Some("typescript"),
         "tsx" => Some("typescriptreact"),
-        "js" | "mjs" => Some("javascript"),
+        "js" | "mjs" | "cjs" => Some("javascript"),
         "jsx" => Some("javascriptreact"),
         "c" | "h" => Some("c"),
-        "cc" | "cpp" | "hpp" => Some("cpp"),
+        "cc" | "cpp" | "cxx" | "hpp" | "hh" => Some("cpp"),
         "go" => Some("go"),
         "json" => Some("json"),
         "jsonc" => Some("jsonc"),
@@ -110,7 +120,7 @@ pub fn language(path: &Path) -> Option<&'static str> {
     }
 }
 pub fn uri(path: &Path) -> Result<String> {
-    url::Url::from_file_path(Path::new(&crate::workspace::display_path(path)))
+    url::Url::from_file_path(Path::new(&crate::paths::display_path(path)))
         .map(|u| u.to_string())
         .map_err(|_| anyhow!("Not an absolute file path"))
 }
@@ -120,7 +130,7 @@ pub fn path(uri: &str) -> Result<PathBuf> {
         .map_err(|_| anyhow!("Only local file URIs are supported"))
 }
 pub fn path_key(path: &Path) -> String {
-    let s = crate::workspace::display_path(path).replace('\\', "/");
+    let s = crate::paths::display_path(path).replace('\\', "/");
     if cfg!(windows) { s.to_lowercase() } else { s }
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -260,6 +270,7 @@ pub enum Event {
 }
 enum Input {
     Send(Value),
+    Saved(String, Option<Rope>),
     Document(std::sync::Arc<std::sync::Mutex<Option<DocumentUpdate>>>),
     Request(u64, Value),
     Cancel(u64),
@@ -277,6 +288,9 @@ struct DocumentUpdate {
 type DocumentSlot = std::sync::Arc<std::sync::Mutex<Option<DocumentUpdate>>>;
 type DocumentSlots =
     std::sync::Mutex<BTreeMap<String, std::sync::Weak<std::sync::Mutex<Option<DocumentUpdate>>>>>;
+/// Nonblocking UI-facing handle to one external server and its transport workers.
+/// Construction starts asynchronous initialization; wait for `Event::Ready` before
+/// capability-dependent requests. Shutdown is requested without joining the UI thread.
 pub struct Client {
     tx: crate::queue::Sender<Input>,
     pub events: crate::queue::Receiver<Event>,
@@ -285,11 +299,13 @@ pub struct Client {
     pub stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
     process: SharedProcess,
     documents: DocumentSlots,
+    stderr: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<u8>>>,
 }
+type SharedLog = std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<u8>>>;
 type SharedProcess = std::sync::Arc<std::sync::Mutex<Option<std::process::Child>>>;
 struct Events(crate::queue::Sender<Event>);
 impl Events {
-    fn send(&self, event: Event) -> Result<(), mpsc::SendError<Event>> {
+    fn send(&self, event: Event) -> Result<(), Box<mpsc::SendError<Event>>> {
         let bytes = match &event {
             Event::Reply { result, .. } => value_volume(result),
             Event::Notification { params, .. } | Event::ServerRequest { params, .. } => {
@@ -299,7 +315,7 @@ impl Events {
         };
         let result = self.0.send_sized(event, bytes);
         crate::background::wake();
-        result
+        result.map_err(Box::new)
     }
 }
 impl Client {
@@ -313,6 +329,8 @@ impl Client {
         let done = stopped.clone();
         let process = SharedProcess::default();
         let worker_process = process.clone();
+        let stderr = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
+        let worker_stderr = stderr.clone();
         thread::spawn(move || {
             if let Err(e) = serve(
                 config,
@@ -321,7 +339,7 @@ impl Client {
                 rx,
                 wire,
                 Events(events_tx.clone()),
-                worker_process,
+                (worker_process, worker_stderr),
             ) {
                 let _ = events_tx.send(Event::Stopped(format!("{e:#}")));
             }
@@ -336,7 +354,20 @@ impl Client {
             stopped,
             process,
             documents: Default::default(),
+            stderr,
         }
+    }
+    pub fn stderr(&self) -> String {
+        let bytes: Vec<_> = self.stderr.lock().unwrap().iter().copied().collect();
+        String::from_utf8_lossy(&bytes)
+            .chars()
+            .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
+            .collect()
+    }
+    pub fn saved(&self, uri: String, text: Option<Rope>) {
+        self.seal_documents();
+        let bytes = uri.len() + text.as_ref().map_or(0, |t| t.len_bytes());
+        let _ = self.tx.send_sized(Input::Saved(uri, text), bytes);
     }
     pub fn notify(&self, method: &str, params: Value) {
         self.seal_documents();
@@ -426,6 +457,12 @@ impl Client {
             json!({"jsonrpc":"2.0","id":id,"result":result}),
         ));
     }
+    pub fn respond_error(&self, id: Value, code: i64, message: &str) {
+        self.seal_documents();
+        let _ = self.tx.send(Input::Send(
+            json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}}),
+        ));
+    }
     pub fn shutdown(&self) {
         self.seal_documents();
         let _ = self.tx.send(Input::Stop);
@@ -469,10 +506,10 @@ fn serve(
     rx: crate::queue::Receiver<Input>,
     wire: crate::queue::Sender<Input>,
     events: Events,
-    process: SharedProcess,
+    (process, log): (SharedProcess, SharedLog),
 ) -> Result<()> {
     let executable = crate::setup::executable(&config.command)
-        .with_context(|| format!("{} is missing; open :Setup", config.command))?;
+        .with_context(|| format!("{} is missing; open :LspManager", config.command))?;
     let mut command = Command::new(executable);
     command
         .args(&config.args)
@@ -493,7 +530,17 @@ fn serve(
     };
     let child = Process(process);
     thread::spawn(move || {
-        let _ = std::io::copy(&mut stderr, &mut std::io::sink());
+        use std::io::Read;
+        let mut chunk = [0; 4096];
+        while let Ok(n) = stderr.read(&mut chunk) {
+            if n == 0 {
+                break;
+            }
+            let mut log = log.lock().unwrap();
+            let remove = (log.len() + n).saturating_sub(32 * 1024);
+            log.drain(..remove);
+            log.extend(&chunk[..n]);
+        }
     });
     thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
@@ -519,7 +566,7 @@ fn serve(
     let root_uri = uri(&root)?;
     write_message(
         &mut stdin,
-        &json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{"processId":std::process::id(),"clientInfo":{"name":"Filavim","version":env!("CARGO_PKG_VERSION")},"rootUri":root_uri,"workspaceFolders":[{"uri":root_uri,"name":root.file_name().unwrap_or_default().to_string_lossy()}],"capabilities":{"general":{"positionEncodings":["utf-16","utf-8","utf-32"]},"workspace":{"applyEdit":true,"workspaceEdit":{"documentChanges":true}},"textDocument":{"completion":{"completionItem":{"snippetSupport":true,"documentationFormat":["markdown","plaintext"],"resolveSupport":{"properties":["detail","documentation","additionalTextEdits"]}}},"signatureHelp":{"contextSupport":true,"signatureInformation":{"documentationFormat":["markdown","plaintext"],"activeParameterSupport":true,"parameterInformation":{"labelOffsetSupport":true}}},"hover":{"contentFormat":["markdown","plaintext"]},"publishDiagnostics":{"versionSupport":true},"codeAction":{"codeActionLiteralSupport":{"codeActionKind":{"valueSet":["quickfix","refactor","source.organizeImports"]}}}}},"initializationOptions":config.initialization_options}}),
+        &json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{"processId":std::process::id(),"clientInfo":{"name":"Filavim","version":env!("CARGO_PKG_VERSION")},"rootUri":root_uri,"workspaceFolders":[{"uri":root_uri,"name":root.file_name().unwrap_or_default().to_string_lossy()}],"capabilities":{"general":{"positionEncodings":["utf-16","utf-8","utf-32"]},"workspace":{"configuration":true,"applyEdit":true,"fileOperations":{"dynamicRegistration":false,"didCreate":true,"didRename":true,"didDelete":true},"workspaceEdit":{"documentChanges":true,"resourceOperations":["create","rename","delete"],"failureHandling":"abort","changeAnnotationSupport":{"groupsOnLabel":false}}},"textDocument":{"completion":{"contextSupport":true,"completionList":{"itemDefaults":["commitCharacters","editRange","insertTextFormat","data"]},"completionItem":{"snippetSupport":true,"commitCharactersSupport":true,"preselectSupport":true,"insertReplaceSupport":true,"documentationFormat":["markdown","plaintext"],"resolveSupport":{"properties":["detail","documentation","additionalTextEdits"]}}},"signatureHelp":{"contextSupport":true,"signatureInformation":{"documentationFormat":["markdown","plaintext"],"activeParameterSupport":true,"parameterInformation":{"labelOffsetSupport":true}}},"hover":{"contentFormat":["markdown","plaintext"]},"publishDiagnostics":{"versionSupport":true},"codeAction":{"dataSupport":true,"resolveSupport":{"properties":["edit","command"]},"codeActionLiteralSupport":{"codeActionKind":{"valueSet":["quickfix","refactor","source.organizeImports"]}}}}},"initializationOptions":config.initialization_options}}),
     )?;
     let mut initialized = false;
     let mut sync = DocumentSync::default();
@@ -549,7 +596,13 @@ fn serve(
         if !initialized
             && matches!(
                 input,
-                Some(Input::Send(_) | Input::Document(_) | Input::Request(..) | Input::Cancel(_))
+                Some(
+                    Input::Send(_)
+                        | Input::Saved(..)
+                        | Input::Document(_)
+                        | Input::Request(..)
+                        | Input::Cancel(_)
+                )
             )
         {
             queued.push(input.unwrap());
@@ -582,6 +635,9 @@ fn serve(
                 return Ok(());
             }
             Some(Input::Send(v)) => sync.send(&mut stdin, &v)?,
+            Some(Input::Saved(uri, text)) => {
+                sync.send(&mut stdin, &saved_notification(uri, text))?
+            }
             Some(Input::Document(slot)) => {
                 let update = { slot.lock().unwrap().take() };
                 if let Some(update) = update {
@@ -606,15 +662,12 @@ fn serve(
                 if let Some(method) = v["method"].as_str() {
                     if let Some(id) = v.get("id") {
                         let result = match method {
-                            "workspace/configuration" => Some(Value::Array(vec![
-                                    Value::Null;
-                                    v["params"]["items"]
-                                        .as_array()
-                                        .map_or(0, Vec::len)
-                                ])),
-                            "client/registerCapability"
-                            | "client/unregisterCapability"
-                            | "window/workDoneProgress/create" => Some(Value::Null),
+                            "workspace/configuration" => {
+                                Some(configuration_values(&config.settings, &v["params"]))
+                            }
+                            // Capability changes must reach the editor before it
+                            // acknowledges them; an ACK alone leaves completion disabled.
+                            "window/workDoneProgress/create" => Some(Value::Null),
                             _ => None,
                         };
                         if let Some(result) = result {
@@ -660,6 +713,9 @@ fn serve(
                     for input in queued.drain(..) {
                         match input {
                             Input::Send(v) => sync.send(&mut stdin, &v)?,
+                            Input::Saved(uri, text) => {
+                                sync.send(&mut stdin, &saved_notification(uri, text))?
+                            }
                             Input::Document(slot) => {
                                 let update = { slot.lock().unwrap().take() };
                                 if let Some(update) = update {
@@ -726,6 +782,13 @@ impl DocumentSync {
         }
         write_message(writer, value)
     }
+}
+fn saved_notification(uri: String, text: Option<Rope>) -> Value {
+    let mut params = json!({"textDocument":{"uri":uri}});
+    if let Some(text) = text {
+        params["text"] = Value::String(text.to_string());
+    }
+    json!({"jsonrpc":"2.0","method":"textDocument/didSave","params":params})
 }
 fn write_document(
     writer: &mut impl Write,
@@ -805,15 +868,24 @@ pub struct Snapshot {
 }
 pub struct PlannedDocument {
     pub path: PathBuf,
+    pub disk_state: Option<crate::files::DiskState>,
     pub before: Rope,
     pub revision: Option<u64>,
     pub edits: Vec<(std::ops::Range<usize>, String)>,
 }
+/// Validate a workspace edit and produce descending scalar-range edits per file.
+/// Uses supplied open-document snapshots, reading unopened files synchronously;
+/// run off-thread. Rejects resource operations and ambiguous/stale edits without
+/// mutating documents. Revalidate the plan against live editors before application.
 pub fn plan_edit(
     edit: &Value,
     snapshots: &BTreeMap<String, Snapshot>,
     encoding: Encoding,
 ) -> Result<Vec<PlannedDocument>> {
+    anyhow::ensure!(
+        !(edit["changes"].is_object() && edit["documentChanges"].is_array()),
+        "WorkspaceEdit must use changes or documentChanges, not both"
+    );
     let mut groups: BTreeMap<String, (Option<u64>, Vec<TextEdit>)> = BTreeMap::new();
     if let Some(changes) = edit["changes"].as_object() {
         for (uri, edits) in changes {
@@ -821,22 +893,86 @@ pub fn plan_edit(
         }
     }
     if let Some(changes) = edit["documentChanges"].as_array() {
+        // Each TextDocumentEdit is evaluated against the result of earlier edits.
+        // Collapse only after evaluating the protocol-defined sequence.
+        type WorkingText = (
+            PathBuf,
+            Rope,
+            Rope,
+            Option<u64>,
+            Option<crate::files::DiskState>,
+        );
+        let mut working: BTreeMap<String, WorkingText> = BTreeMap::new();
         for change in changes {
-            if change.get("kind").is_some() {
-                bail!("File create/rename/delete edits are not supported; no edits applied")
-            }
+            anyhow::ensure!(
+                change.get("kind").is_none(),
+                "File create/rename/delete edits require resource-operation approval; no edits applied"
+            );
             let uri = change["textDocument"]["uri"]
                 .as_str()
                 .context("Missing document URI")?;
-            let version = change["textDocument"]["version"].as_u64();
-            if groups.contains_key(uri) {
-                bail!("Duplicate document edit")
-            };
-            groups.insert(
-                uri.into(),
-                (version, serde_json::from_value(change["edits"].clone())?),
-            );
+            let target = path(uri)?;
+            let key = path_key(&target);
+            if !working.contains_key(&key) {
+                let (before, revision, baseline) = if let Some(snapshot) = snapshots.get(&key) {
+                    (snapshot.text.clone(), Some(snapshot.revision), None)
+                } else {
+                    let (text, baseline) = crate::files::open_tracked(&target)?;
+                    anyhow::ensure!(
+                        baseline != crate::files::DiskState::Missing,
+                        "Workspace edit target does not exist"
+                    );
+                    (text, None, Some(baseline))
+                };
+                working.insert(
+                    key.clone(),
+                    (target, before.clone(), before, revision, baseline),
+                );
+            }
+            let (_, _, text, revision, _) = working.get_mut(&key).unwrap();
+            if !change["textDocument"]["version"].is_null() {
+                let version = change["textDocument"]["version"]
+                    .as_u64()
+                    .context("Invalid document version")?;
+                anyhow::ensure!(
+                    *revision == Some(version),
+                    "Stale or unopened document version"
+                );
+            }
+            let edits = change["edits"].as_array().context("Missing text edits")?;
+            for edit_item in edits {
+                if let Some(annotation) = edit_item["annotationId"].as_str() {
+                    let annotation = &edit["changeAnnotations"][annotation];
+                    anyhow::ensure!(annotation.is_object(), "Unknown change annotation");
+                    anyhow::ensure!(
+                        annotation["needsConfirmation"] != true,
+                        "Workspace edit requires explicit annotation approval; no edits applied"
+                    );
+                }
+            }
+            let edits: Vec<TextEdit> = serde_json::from_value(change["edits"].clone())?;
+            for (range, replacement) in ranges(text, &edits, encoding)? {
+                text.remove(range.clone());
+                text.insert(range.start, &replacement);
+            }
         }
+        return Ok(working
+            .into_values()
+            .map(|(path, before, text, revision, disk_state)| {
+                let edits = if text == before {
+                    Vec::new()
+                } else {
+                    vec![(0..before.len_chars(), text.to_string())]
+                };
+                PlannedDocument {
+                    path,
+                    before,
+                    revision,
+                    disk_state,
+                    edits,
+                }
+            })
+            .collect());
     }
     let mut plan = Vec::new();
     for (uri, (version, edits)) in groups {
@@ -850,22 +986,52 @@ pub fn plan_edit(
         if version.is_some() && snapshot.is_none() {
             bail!("Versioned edit for unopened document")
         }
-        let before = match snapshot {
-            Some(s) => s.text.clone(),
-            None => Rope::from_str(
-                &std::fs::read_to_string(&path)
-                    .with_context(|| format!("Cannot load {}", path.display()))?,
-            ),
+        let (before, disk_state) = match snapshot {
+            Some(s) => (s.text.clone(), None),
+            None => {
+                let (text, state) = crate::files::open_tracked(&path)?;
+                anyhow::ensure!(
+                    state != crate::files::DiskState::Missing,
+                    "Workspace edit target does not exist"
+                );
+                (text, Some(state))
+            }
         };
         let edits = ranges(&before, &edits, encoding)?;
         plan.push(PlannedDocument {
             path,
+            disk_state,
             before,
             revision: snapshot.map(|s| s.revision),
             edits,
         });
     }
     Ok(plan)
+}
+/// Return requested configuration sections in order. Unknown sections are null.
+pub fn configuration_values(settings: &Value, params: &Value) -> Value {
+    Value::Array(
+        params["items"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(
+                |item| match item["section"].as_str().filter(|s| !s.is_empty()) {
+                    None => settings.clone(),
+                    Some(section) => {
+                        if let Some(value) = settings.get(section) {
+                            return value.clone();
+                        }
+                        section
+                            .split('.')
+                            .try_fold(settings, |value, key| value.get(key))
+                            .cloned()
+                            .unwrap_or(Value::Null)
+                    }
+                },
+            )
+            .collect(),
+    )
 }
 pub fn selection_range(text: &Rope, range: std::ops::Range<usize>, encoding: Encoding) -> Range {
     Range::new(
@@ -938,6 +1104,7 @@ mod performance_tests {
             events,
             stopped: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             process: Default::default(),
+            stderr: Default::default(),
             documents: Default::default(),
         };
         let mut b = Buffer::default();
@@ -1111,5 +1278,22 @@ impl Write for DeadlineWriter {
     fn flush(&mut self) -> std::io::Result<()> {
         let _lease = self.lease();
         self.inner.flush()
+    }
+}
+
+#[cfg(test)]
+mod configuration_tests {
+    use super::*;
+    #[test]
+    fn requested_configuration_sections_preserve_order_and_unknown_sections() {
+        let settings = json!({"python":{"analysis":{"typeCheckingMode":"strict"}},"rust-analyzer":{"check":{"command":"clippy"}}});
+        let values = configuration_values(
+            &settings,
+            &json!({"items":[{"section":"python.analysis"},{"section":"unknown"},{"section":"rust-analyzer"},{}]}),
+        );
+        assert_eq!(
+            values,
+            json!([{"typeCheckingMode":"strict"},null,{"check":{"command":"clippy"}},settings])
+        );
     }
 }

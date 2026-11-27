@@ -96,8 +96,8 @@ files retain their verified disk baseline when opened by a workspace edit, so la
 saves still detect external changes.
 
 The client advertises and handles `workspace/applyEdit` and ordered file create,
-rename, and delete operations. Resource changes and annotations requiring consent
-use a native approval dialog. The planner checks paths and disk state before
+rename, and delete operations. Destructive operations, paths outside the workspace,
+and annotations requiring consent use a native approval dialog. The planner checks paths and disk state before
 execution. Approved resource changes can reach disk during execution. Text edits
 remain unsaved and undoable in the affected buffers. If execution fails or is
 cancelled mid-plan, completed operations can remain on disk. The client reconciles

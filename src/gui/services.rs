@@ -3187,19 +3187,9 @@ pub fn reconcile_workspace(
                     let mut cursor = editor.buffer.cursor;
                     let mut anchor = editor.anchor;
                     for (range, text) in edits {
-                        let project = |at: usize| {
-                            if at >= range.end {
-                                at.saturating_add_signed(
-                                    text.chars().count() as isize - range.len() as isize,
-                                )
-                            } else if at > range.start {
-                                range.start + text.chars().count()
-                            } else {
-                                at
-                            }
-                        };
-                        cursor = project(cursor);
-                        anchor = anchor.map(project);
+                        let inserted = text.chars().count();
+                        cursor = project_workspace_position(cursor, range, inserted);
+                        anchor = anchor.map(|at| project_workspace_position(at, range, inserted));
                         editor.buffer.replace(range.clone(), text);
                     }
                     editor.buffer.cursor = cursor.min(editor.buffer.text.len_chars());
@@ -3256,6 +3246,17 @@ pub fn reconcile_workspace(
     }
     result
 }
+
+fn project_workspace_position(at: usize, range: &std::ops::Range<usize>, inserted: usize) -> usize {
+    if at >= range.end {
+        at.saturating_add_signed(inserted as isize - range.len() as isize)
+    } else if at > range.start {
+        range.start + inserted
+    } else {
+        at
+    }
+}
+
 pub fn apply_plan(docs: &mut Documents, plan: Vec<lsp::PlannedDocument>) -> anyhow::Result<()> {
     for d in &plan {
         if let Some(id) = docs.find(&d.path) {

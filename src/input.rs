@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 /// Windows console Alt-code input may arrive only as a character release.
 /// Keep paired releases out of the editor while retaining those text events.
+#[cfg_attr(not(windows), derive(Default))]
 pub struct KeyEvents {
     pressed: HashMap<KeyIdentity, KeyModifiers>,
     windows: bool,
@@ -38,11 +39,12 @@ fn key_identity(code: KeyCode) -> KeyIdentity {
         code => code,
     })
 }
+#[cfg(windows)]
 impl Default for KeyEvents {
     fn default() -> Self {
         Self {
             pressed: HashMap::new(),
-            windows: cfg!(windows),
+            windows: true,
         }
     }
 }

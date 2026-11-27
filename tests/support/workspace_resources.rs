@@ -768,6 +768,118 @@ fn client_action_and_duplicate_server_request_apply_once_and_remap_uris() {
     s.shutdown();
 }
 #[test]
+fn malformed_workspace_envelopes_are_rejected_by_both_planners_and_on_the_wire() {
+    let temp = support::tempdir();
+    let created = temp.path().join("created.rs");
+    let path = temp.path().join("main.rs");
+    let value = json!({"changes": {(uri(&path)): []}, "documentChanges":[
+        {"kind":"create","uri":uri(&created)}
+    ]});
+    for invalid in [
+        &value,
+        &json!({"changes": null}),
+        &json!({"documentChanges": {}}),
+    ] {
+        assert!(lsp::plan_edit(invalid, &Default::default(), lsp::Encoding::Utf16).is_err());
+        assert!(workspace::plan(invalid, temp.path(), Vec::new(), lsp::Encoding::Utf16).is_err());
+    }
+    let (mut docs, mut services, log, _) = mock_services(temp.path(), &value);
+    services.request(&docs, Kind::Execute, Some(json!({"command":"mock.fix"})));
+    until(|| {
+        services.poll(&mut docs);
+        wire_response(&log).is_some()
+    });
+    let response = wire_response(&log).unwrap();
+    assert_eq!(response["result"]["applied"], false);
+    assert!(response["result"].get("failedChange").is_none());
+    assert!(
+        response["result"]["failureReason"]
+            .as_str()
+            .unwrap()
+            .contains("not both")
+    );
+    assert!(!created.exists());
+    assert_eq!(docs.editor.buffer.text.to_string(), "value");
+    services.shutdown();
+}
+
+#[test]
+fn ordered_delete_then_directory_rename_keeps_a_recoverable_backup() {
+    let temp = support::tempdir();
+    let folder = temp.path().join("old");
+    let moved = temp.path().join("moved");
+    std::fs::create_dir(&folder).unwrap();
+    let removed = folder.join("removed.rs");
+    std::fs::write(&removed, "deleted content").unwrap();
+    std::fs::write(folder.join("kept.rs"), "untouched content").unwrap();
+    let plan = workspace::plan(
+        &request(vec![
+            json!({"kind":"delete","uri":uri(&removed)}),
+            json!({"kind":"rename","oldUri":uri(&folder),"newUri":uri(&moved)}),
+        ]),
+        temp.path(),
+        Vec::new(),
+        lsp::Encoding::Utf16,
+    )
+    .unwrap();
+    let result = workspace::execute(plan);
+    assert!(result.failure.is_none(), "{:?}", result.failure);
+    assert!(!folder.exists());
+    assert_eq!(
+        std::fs::read_to_string(moved.join("kept.rs")).unwrap(),
+        "untouched content"
+    );
+    assert_eq!(result.backups.len(), 1);
+    let backup = &result.backups[0];
+    assert_eq!(
+        lsp::path_key(Path::new(
+            &std::fs::read_to_string(backup.join("SOURCE.txt")).unwrap()
+        )),
+        lsp::path_key(&removed)
+    );
+    let recovered = moved.join("recovered.rs");
+    std::fs::rename(backup.join("original"), &recovered).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(recovered).unwrap(),
+        "deleted content"
+    );
+}
+
+#[test]
+fn cancellation_after_first_resource_preserves_only_the_committed_prefix() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let temp = support::tempdir();
+    let first = temp.path().join("first.rs");
+    let second = temp.path().join("second.rs");
+    let plan = workspace::plan(
+        &request(vec![
+            json!({"kind":"create","uri":uri(&first)}),
+            json!({"kind":"create","uri":uri(&second)}),
+        ]),
+        temp.path(),
+        Vec::new(),
+        lsp::Encoding::Utf16,
+    )
+    .unwrap();
+    let cancel = AtomicBool::new(false);
+    let result = workspace::execute_with_progress(plan, &cancel, |completed, total| {
+        assert_eq!((completed, total), (1, 2));
+        cancel.store(true, Ordering::Relaxed);
+    });
+    let reply = result.response();
+    assert_eq!(reply["applied"], false);
+    assert_eq!(reply["failedChange"], 1);
+    assert!(
+        reply["failureReason"]
+            .as_str()
+            .unwrap()
+            .contains("Filesystem effects retained from changes 1")
+    );
+    assert!(first.is_file());
+    assert!(!second.exists());
+}
+
+#[test]
 fn server_invalid_plan_and_pending_save_return_accurate_failure() {
     for busy in [false, true] {
         let temp = support::tempdir();
@@ -820,7 +932,7 @@ fn real_rust_analyzer_create_module_resource_action() {
     )
     .unwrap();
     let path = temp.path().join("src/main.rs");
-    let source = "mod helper;\nfn main() {}\n";
+    let source = "mod helper;\nfn main() { original(); }\nfn original() {}\n";
     std::fs::write(&path, source).unwrap();
     let mut config = Config {
         syntax: false,
@@ -923,6 +1035,29 @@ fn real_rust_analyzer_create_module_resource_action() {
     println!(
         "REAL RESOURCE: definition resolves to created module; source document identity/content preserved"
     );
+    d.editor.buffer.cursor = source.find("original").unwrap();
+    s.request(&d, Kind::Rename, Some(json!({"newName":"renamed"})));
+    until(|| {
+        s.poll(&mut d);
+        s.panel
+            .as_ref()
+            .is_some_and(|panel| panel.kind == Kind::Rename)
+    });
+    s.accept(&mut d);
+    until(|| {
+        s.poll(&mut d);
+        !s.workspace_active()
+    });
+    assert_eq!(
+        d.editor.buffer.text.to_string(),
+        source.replace("original", "renamed")
+    );
+    assert!(d.editor.buffer.dirty());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), source);
+    d.editor.buffer.undo();
+    assert_eq!(d.editor.buffer.text.to_string(), source);
+    assert!(module.is_file());
+    println!("REAL TEXT EDIT: symbol rename remained unsaved and undo restored the source");
     s.shutdown();
     until(|| {
         s.poll(&mut d);

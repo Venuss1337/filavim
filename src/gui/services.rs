@@ -153,6 +153,7 @@ pub struct WorkspaceApproval {
 struct WorkspaceContext {
     root: PathBuf,
     token: u64,
+    indexed: bool,
     documents: Vec<lsp::workspace::OpenDocument>,
     reply: Option<(String, Value, std::time::Instant)>,
     command: Option<(String, Value)>,
@@ -1915,25 +1916,8 @@ impl Services {
                     }
                     self.update(docs);
                     self.workspace_reply(&context, outcome.response());
-                    self.workspace_changed = outcome.applied.iter().any(|a| {
-                        !matches!(
-                            a.step.operation,
-                            lsp::workspace::Operation::Text { .. }
-                                | lsp::workspace::Operation::Ignore
-                        ) || !a.displaced.is_empty()
-                    });
-                    let message = if let Some(failure) = &outcome.failure {
-                        format!(
-                            "{failure}; {} changes committed; retained backups: {:?}",
-                            outcome.applied.len(),
-                            outcome.backups
-                        )
-                    } else {
-                        format!(
-                            "Workspace edit applied (text remains unsaved). Retained backups: {:?}",
-                            outcome.backups
-                        )
-                    };
+                    self.workspace_changed = outcome.applied.iter().any(|a| a.changed_disk());
+                    let message = outcome.summary();
                     self.notification(
                         if outcome.failure.is_some() {
                             super::toast::Category::Error
@@ -2427,7 +2411,12 @@ impl Services {
     pub fn workspace_active(&self) -> bool {
         self.workspace_planning || self.workspace_executing || self.workspace_approval.is_some()
     }
-    fn workspace_reply(&mut self, context: &WorkspaceContext, result: Value) {
+    fn workspace_reply(&mut self, context: &WorkspaceContext, mut result: Value) {
+        if !context.indexed
+            && let Some(result) = result.as_object_mut()
+        {
+            result.remove("failedChange");
+        }
         if let Some((key, id, started)) = &context.reply {
             self.workspace_requests
                 .remove(&format!("{key}:{started:?}:{id}"));
@@ -2467,6 +2456,7 @@ impl Services {
         let context = WorkspaceContext {
             root: self.root.clone(),
             token: self.serial,
+            indexed: value.get("changes").is_none() && value["documentChanges"].is_array(),
             documents,
             reply,
             command,
@@ -2477,6 +2467,12 @@ impl Services {
             self.message = Some(
                 "Workspace edit not started: another file/workspace operation is active".into(),
             );
+            return;
+        }
+        if let Err(error) = lsp::validate_workspace_edit(&value) {
+            let reason = error.to_string();
+            self.workspace_reply(&context, json!({"applied":false,"failureReason":reason}));
+            self.message = Some(reason);
             return;
         }
         self.workspace_cancel = Default::default();
@@ -3140,111 +3136,109 @@ pub fn reconcile_workspace(
     use lsp::workspace::Operation;
     let mut grouped = BTreeSet::new();
     let mut failure = None;
-    let result = (|| -> Result<(), lsp::workspace::Failure> {
-        for applied in &outcome.applied {
-            for removed in &applied.displaced {
+    for applied in &outcome.applied {
+        for removed in &applied.displaced {
+            for id in docs.order.clone() {
+                let editor = docs.get_mut(id).unwrap();
+                if editor
+                    .buffer
+                    .path
+                    .as_ref()
+                    .is_some_and(|p| lsp::workspace::relative_path(p, removed).is_some())
+                {
+                    editor.buffer.path = None;
+                    editor.buffer.disk_state = None;
+                    editor.buffer.mark_recovered();
+                    editor.snippet = None;
+                }
+            }
+        }
+        match &applied.step.operation {
+            Operation::Text {
+                path,
+                before,
+                edits,
+            } => {
+                let id = if let Some(id) = docs.find(path) {
+                    id
+                } else {
+                    let mut buffer = Buffer::new(before.clone(), Some(path.clone()));
+                    buffer.disk_state = applied.baselines.get(path).cloned();
+                    match docs.add(buffer, false) {
+                        Ok(id) => id,
+                        Err(error) => {
+                            failure.get_or_insert_with(|| lsp::workspace::Failure {
+                                index: applied.step.index,
+                                reason: format!("Cannot open workspace document: {error:#}"),
+                            });
+                            continue;
+                        }
+                    }
+                };
+                let editor = docs.get_mut(id).unwrap();
+                if editor.buffer.text != *before {
+                    failure.get_or_insert(lsp::workspace::Failure{index:applied.step.index,reason:"Document changed during workspace execution; disk prefix retained, new editor text preserved".into()});
+                    continue;
+                }
+                if grouped.insert(id) {
+                    editor.buffer.end_group();
+                    editor.buffer.begin_group();
+                }
+                let mut cursor = editor.buffer.cursor;
+                let mut anchor = editor.anchor;
+                for (range, text) in edits {
+                    let inserted = text.chars().count();
+                    cursor = project_workspace_position(cursor, range, inserted);
+                    anchor = anchor.map(|at| project_workspace_position(at, range, inserted));
+                    editor.buffer.replace(range.clone(), text);
+                }
+                editor.buffer.cursor = cursor.min(editor.buffer.text.len_chars());
+                editor.buffer.snap_cursor();
+                if let Some(at) = anchor {
+                    let saved = editor.buffer.cursor;
+                    editor.buffer.cursor = at.min(editor.buffer.text.len_chars());
+                    editor.buffer.snap_cursor();
+                    editor.anchor = Some(editor.buffer.cursor);
+                    editor.buffer.cursor = saved;
+                }
+                editor.snippet = None;
+            }
+            Operation::Rename { from, to, .. } => {
                 for id in docs.order.clone() {
                     let editor = docs.get_mut(id).unwrap();
-                    if editor
+                    if let Some(path) = editor
                         .buffer
                         .path
                         .as_ref()
-                        .is_some_and(|p| lsp::workspace::relative_path(p, removed).is_some())
+                        .map(|p| PathBuf::from(crate::paths::display_path(p)))
+                        && let Some(suffix) = lsp::workspace::relative_path(&path, from)
                     {
-                        editor.buffer.path = None;
-                        editor.buffer.disk_state = None;
-                        editor.buffer.mark_recovered();
+                        let path = if suffix.as_os_str().is_empty() {
+                            to.clone()
+                        } else {
+                            to.join(&suffix)
+                        };
+                        editor.buffer.disk_state = applied.baselines.get(&path).cloned();
+                        editor.buffer.path = Some(path);
                         editor.snippet = None;
                     }
                 }
             }
-            match &applied.step.operation {
-                Operation::Text {
-                    path,
-                    before,
-                    edits,
-                } => {
-                    let id = if let Some(id) = docs.find(path) {
-                        id
-                    } else {
-                        let mut buffer = Buffer::new(before.clone(), Some(path.clone()));
-                        buffer.disk_state = applied.baselines.get(path).cloned();
-                        docs.add(buffer, false)
-                            .map_err(|e| lsp::workspace::Failure {
-                                index: applied.step.index,
-                                reason: format!("Cannot open workspace document: {e:#}"),
-                            })?
-                    };
-                    let editor = docs.get_mut(id).unwrap();
-                    if editor.buffer.text != *before {
-                        failure.get_or_insert(lsp::workspace::Failure{index:applied.step.index,reason:"Document changed during workspace execution; disk prefix retained, new editor text preserved".into()});
-                        continue;
-                    }
-                    if grouped.insert(id) {
-                        editor.buffer.end_group();
-                        editor.buffer.begin_group();
-                    }
-                    let mut cursor = editor.buffer.cursor;
-                    let mut anchor = editor.anchor;
-                    for (range, text) in edits {
-                        let inserted = text.chars().count();
-                        cursor = project_workspace_position(cursor, range, inserted);
-                        anchor = anchor.map(|at| project_workspace_position(at, range, inserted));
-                        editor.buffer.replace(range.clone(), text);
-                    }
-                    editor.buffer.cursor = cursor.min(editor.buffer.text.len_chars());
-                    editor.buffer.snap_cursor();
-                    if let Some(at) = anchor {
-                        let saved = editor.buffer.cursor;
-                        editor.buffer.cursor = at.min(editor.buffer.text.len_chars());
-                        editor.buffer.snap_cursor();
-                        editor.anchor = Some(editor.buffer.cursor);
-                        editor.buffer.cursor = saved;
-                    }
-                    editor.snippet = None;
+            Operation::Create { path, .. } => {
+                if let Some(id) = docs.find(path) {
+                    docs.get_mut(id).unwrap().buffer.disk_state =
+                        applied.baselines.get(path).cloned();
                 }
-                Operation::Rename { from, to, .. } => {
-                    for id in docs.order.clone() {
-                        let editor = docs.get_mut(id).unwrap();
-                        if let Some(path) = editor
-                            .buffer
-                            .path
-                            .as_ref()
-                            .map(|p| PathBuf::from(crate::paths::display_path(p)))
-                            && let Some(suffix) = lsp::workspace::relative_path(&path, from)
-                        {
-                            let path = if suffix.as_os_str().is_empty() {
-                                to.clone()
-                            } else {
-                                to.join(&suffix)
-                            };
-                            editor.buffer.disk_state = applied.baselines.get(&path).cloned();
-                            editor.buffer.path = Some(path);
-                            editor.snippet = None;
-                        }
-                    }
-                }
-                Operation::Create { path, .. } => {
-                    if let Some(id) = docs.find(path) {
-                        docs.get_mut(id).unwrap().buffer.disk_state =
-                            applied.baselines.get(path).cloned();
-                    }
-                }
-                Operation::Delete { .. } | Operation::Ignore => (),
             }
+            Operation::Delete { .. } | Operation::Ignore => (),
         }
-        if let Some(failure) = failure {
-            Err(failure)
-        } else {
-            Ok(())
-        }
-    })();
+    }
     for id in grouped {
         if let Some(editor) = docs.get_mut(id) {
             editor.buffer.end_group();
         }
     }
-    result
+    failure.map_or(Ok(()), Err)
 }
 
 fn project_workspace_position(at: usize, range: &std::ops::Range<usize>, inserted: usize) -> usize {

@@ -9,6 +9,7 @@ use ropey::Rope;
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
+    io::Write,
     path::{Component, Path, PathBuf},
 };
 
@@ -132,7 +133,8 @@ fn target(uri: &Value) -> Result<PathBuf> {
             && !raw.contains("/./")
             && !raw.ends_with("/..")
             && !raw.ends_with("/.")
-            && !raw.contains("%5c"),
+            && !raw.contains("%5c")
+            && !raw.contains("%2f"),
         "Encoded/traversal path rejected"
     );
     #[cfg(windows)]
@@ -365,7 +367,11 @@ fn flag(options: &Value, key: &str) -> Result<bool> {
         Some(v) => v.as_bool().context("Resource option must be boolean"),
     }
 }
-fn annotation(value: &Value, annotations: &Value, confirmations: &mut Vec<String>) -> Result<()> {
+pub(super) fn annotation(
+    value: &Value,
+    annotations: &Value,
+    confirmations: &mut Vec<String>,
+) -> Result<()> {
     if let Some(id) = value.get("annotationId") {
         let id = id.as_str().context("annotationId must be a string")?;
         let annotation = annotations.get(id).context("Unknown change annotation")?;
@@ -414,11 +420,7 @@ pub(crate) fn plan_cancellable(
 ) -> Result<Plan, Failure> {
     let result = (|| -> Result<Plan> {
         ensure!(!cancel.load(Ordering::Relaxed), "Workspace edit cancelled");
-        ensure!(value.is_object(), "WorkspaceEdit must be an object");
-        ensure!(
-            value.get("changeAnnotations").is_none_or(Value::is_object),
-            "changeAnnotations must be an object"
-        );
+        super::validate_workspace_edit(value)?;
         let root = PathBuf::from(crate::paths::display_path(
             &std::fs::canonicalize(root).context("Cannot resolve workspace root")?,
         ));
@@ -470,7 +472,15 @@ pub(crate) fn plan_cancellable(
                 vec![&change["textDocument"]["uri"]]
             };
             for uri in uris {
-                let path = target(uri).map_err(|e| {
+                let path = target(uri).and_then(|path| {
+                    if change.get("kind").is_some() {
+                        ensure!(
+                            path.parent().is_some() && relative_path(&root, &path).is_none(),
+                            "Cannot modify a filesystem root, the workspace root, or an ancestor"
+                        );
+                    }
+                    Ok(path)
+                }).map_err(|e| {
                     anyhow::anyhow!(Failure {
                         index,
                         reason: format!("{e:#}")
@@ -534,7 +544,6 @@ pub(crate) fn plan_cancellable(
                     let options = change.get("options").unwrap_or(&Value::Null);
                     ensure!(options.is_null() || options.is_object(), "Invalid resource options");
                     let path = logical_path(target(if kind == "rename" { &change["oldUri"] } else { &change["uri"] })?,&nodes);
-                    ensure!(path != root && path.parent().is_some(), "Cannot replace a workspace/filesystem root");
                     let before = match tree(&path,&nodes){State::File(DiskState::Missing)=>State::Missing,state=>state};
                     expected.push((path.clone(), before.clone()));
                     match kind.as_str().context("Resource kind must be a string")? {
@@ -564,7 +573,6 @@ pub(crate) fn plan_cancellable(
                             if cfg!(windows){let requested=super::path(change["newUri"].as_str().context("Missing rename URI")?)?;to.set_file_name(requested.file_name().context("Missing destination name")?);}
                             let case_only=cfg!(windows) && super::path_key(&path)==super::path_key(&to) && path!=to;
                             ensure!(case_only || (path != to && !to.starts_with(&path) && !path.starts_with(&to)), "Overlapping/self rename rejected");
-                            ensure!(to != root, "Cannot replace workspace root");
                             let destination = tree(&logical_path(canonical_to,&nodes), &nodes);
                             expected.push((to.clone(), destination.clone()));
                             let overwrite = flag(options, "overwrite")?;
@@ -670,26 +678,27 @@ pub(crate) fn plan_cancellable(
             }
         }
         for document in &documents {
-            if steps.iter().any(|s| match &s.operation {
-                Operation::Create { path, .. } | Operation::Delete { path } => {
-                    document.path.starts_with(path)
-                }
-                Operation::Rename { from, to, .. } => {
-                    document.path.starts_with(from) || document.path.starts_with(to)
-                }
-                _ => false,
-            }) {
-                if let Some(baseline) = &document.baseline {
-                    files::verify_state_cancellable(&document.path, baseline, || {
-                        cancel.load(Ordering::Relaxed)
-                    })?;
-                } else {
-                    ensure!(
-                        !document.path.exists(),
-                        "Open file has no verified disk baseline; reopen it before resource changes"
-                    );
-                }
-            }
+            let Some(step) = steps.iter().find(|step| {
+                !matches!(step.operation, Operation::Text { .. } | Operation::Ignore)
+                    && step.touches(&document.path)
+            }) else {
+                continue;
+            };
+            let verification = if let Some(baseline) = &document.baseline {
+                files::verify_state_cancellable(&document.path, baseline, || {
+                    cancel.load(Ordering::Relaxed)
+                })
+            } else if document.path.exists() {
+                Err(anyhow::anyhow!(
+                    "Open file has no verified disk baseline; reopen it before resource changes"
+                ))
+            } else {
+                Ok(())
+            };
+            verification.map_err(|error| Failure {
+                index: step.index,
+                reason: format!("{error:#}"),
+            })?;
         }
         confirmations.sort();
         confirmations.dedup();
@@ -741,6 +750,13 @@ pub struct Applied {
     pub displaced: Vec<PathBuf>,
 }
 impl Applied {
+    pub(crate) fn changed_disk(&self) -> bool {
+        !matches!(
+            self.step.operation,
+            Operation::Text { .. } | Operation::Ignore
+        ) || !self.displaced.is_empty()
+    }
+
     pub fn touches(&self, path: &Path) -> bool {
         self.step.touches(path)
             || self
@@ -756,11 +772,41 @@ pub struct Outcome {
     pub displaced: Vec<PathBuf>,
 }
 impl Outcome {
+    pub(crate) fn summary(&self) -> String {
+        let mut message = self.failure.as_ref().map_or_else(
+            || "Workspace edit applied.".to_string(),
+            |failure| format!("{failure}."),
+        );
+        let disk_steps: Vec<_> = self
+            .applied
+            .iter()
+            .filter(|change| change.changed_disk())
+            .map(|change| (change.step.index + 1).to_string())
+            .collect();
+        if !disk_steps.is_empty() {
+            message.push_str(&format!(
+                " Filesystem effects retained from changes {}.",
+                disk_steps.join(", ")
+            ));
+        }
+        if self
+            .applied
+            .iter()
+            .any(|change| matches!(change.step.operation, Operation::Text { .. }))
+        {
+            message.push_str(" Applied text edits remain unsaved and undoable in editor buffers.");
+        }
+        for backup in &self.backups {
+            message.push_str(&format!(" Retained backup: {}.", backup.display()));
+        }
+        message
+    }
+
     pub fn response(&self) -> Value {
         match &self.failure {
             None => json!({"applied":true}),
             Some(f) => {
-                json!({"applied":false,"failureReason":format!("{f}; {} preceding changes completed; failed change may have retained filesystem effects; recovery directories: {}",self.applied.iter().filter(|a|a.step.index<f.index).count(),self.backups.iter().map(|p|p.display().to_string()).collect::<Vec<_>>().join(", ")),"failedChange":f.index})
+                json!({"applied":false,"failureReason": self.summary(), "failedChange":f.index})
             }
         }
     }
@@ -992,22 +1038,33 @@ fn rename_no_replace(from: &Path, to: &Path) -> Result<()> {
 fn backup(
     path: &Path,
     expected: &State,
+    moving_directories: &[PathBuf],
     backups: &mut Vec<PathBuf>,
     displaced: &mut Vec<PathBuf>,
     cancel: &AtomicBool,
 ) -> Result<()> {
+    let parent = path
+        .parent()
+        .context("No backup parent")?
+        .ancestors()
+        .find(|parent| {
+            !moving_directories
+                .iter()
+                .any(|directory| relative_path(parent, directory).is_some())
+        })
+        .context("No backup location outside affected directories")?;
+    check_components(parent)?;
     let directory = tempfile::Builder::new()
         .prefix(".filavim-lsp-backup-")
-        .tempdir_in(path.parent().context("No backup parent")?)?
-        .keep();
-    // Retain the directory even on failure: an external writer may have changed
-    // the object between final verification and rename. Never destroy that object.
+        .tempdir_in(parent)?;
+    let mut manifest = std::fs::File::create(directory.path().join("SOURCE.txt"))?;
+    manifest.write_all(path.to_string_lossy().as_bytes())?;
+    manifest.sync_all()?;
+    rename_no_replace(path, &directory.path().join("original"))?;
+    // From this point the directory owns the original. Keep it even if subsequent
+    // verification or cancellation fails.
+    let directory = directory.keep();
     backups.push(directory.clone());
-    std::fs::write(
-        directory.join("SOURCE.txt"),
-        path.to_string_lossy().as_bytes(),
-    )?;
-    rename_no_replace(path, &directory.join("original"))?;
     displaced.push(path.to_path_buf());
     ensure!(
         same_object(
@@ -1042,6 +1099,15 @@ pub fn execute_with_progress(
     cancel: &AtomicBool,
     mut progress: impl FnMut(usize, usize),
 ) -> Outcome {
+    // A retained backup must not become a child of a later renamed/deleted directory.
+    let moving_directories: Vec<_> = plan
+        .steps
+        .iter()
+        .filter(|step| !matches!(step.operation, Operation::Text { .. } | Operation::Ignore))
+        .flat_map(|step| &step.expected)
+        .filter(|(_, state)| matches!(state, State::Directory(..)))
+        .map(|(path, _)| path.clone())
+        .collect();
     let total = plan.steps.len();
     let mut outcome = Outcome {
         applied: Vec::new(),
@@ -1070,7 +1136,11 @@ pub fn execute_with_progress(
             let index = plan
                 .steps
                 .iter()
-                .find(|s| s.parents.iter().any(|(p, _)| p == path))
+                .find(|step| {
+                    step.expected
+                        .iter()
+                        .any(|(target, _)| relative_path(target, path).is_some())
+                })
                 .map_or(0, |s| s.index);
             outcome.failure = Some(Failure {
                 index,
@@ -1101,7 +1171,7 @@ pub fn execute_with_progress(
             return outcome;
         }
     }
-    let mut created = BTreeMap::new();
+    let mut created: BTreeMap<PathBuf, DiskState> = BTreeMap::new();
     for step in plan.steps {
         if cancel.load(Ordering::Relaxed) {
             outcome.failure = Some(Failure {
@@ -1132,6 +1202,20 @@ pub fn execute_with_progress(
                     false
                 };
                 let actual = scan_cancellable(path, &mut 0, cancel)?;
+                if matches!(actual, State::Directory(..)) {
+                    let mut baselines = BTreeMap::new();
+                    collect_baselines(path, &actual, &mut baselines);
+                    for (child, baseline) in created
+                        .iter()
+                        .filter(|(child, _)| relative_path(child, path).is_some())
+                    {
+                        ensure!(
+                            baselines.get(child) == Some(baseline),
+                            "Changed resource inside directory: {}",
+                            child.display()
+                        );
+                    }
+                }
                 ensure!(
                     if moved {
                         same_object(state, &actual)
@@ -1154,6 +1238,7 @@ pub fn execute_with_progress(
                         backup(
                             path,
                             &step.expected[0].1,
+                            &moving_directories,
                             &mut outcome.backups,
                             &mut outcome.displaced,
                             cancel,
@@ -1187,6 +1272,7 @@ pub fn execute_with_progress(
                         backup(
                             from,
                             &step.expected[0].1,
+                            &moving_directories,
                             &mut outcome.backups,
                             &mut outcome.displaced,
                             cancel,
@@ -1204,6 +1290,7 @@ pub fn execute_with_progress(
                             backup(
                                 to,
                                 &step.expected[1].1,
+                                &moving_directories,
                                 &mut outcome.backups,
                                 &mut outcome.displaced,
                                 cancel,
@@ -1228,6 +1315,7 @@ pub fn execute_with_progress(
                     backup(
                         path,
                         &step.expected[0].1,
+                        &moving_directories,
                         &mut outcome.backups,
                         &mut outcome.displaced,
                         cancel,

@@ -873,6 +873,33 @@ pub struct PlannedDocument {
     pub revision: Option<u64>,
     pub edits: Vec<(std::ops::Range<usize>, String)>,
 }
+pub(crate) fn validate_workspace_edit(edit: &Value) -> Result<()> {
+    anyhow::ensure!(edit.is_object(), "WorkspaceEdit must be an object");
+    anyhow::ensure!(
+        edit.get("changes").is_none() || edit.get("documentChanges").is_none(),
+        "WorkspaceEdit must use changes or documentChanges, not both"
+    );
+    anyhow::ensure!(
+        edit.get("changes").is_none_or(Value::is_object)
+            && edit.get("documentChanges").is_none_or(Value::is_array)
+            && edit.get("changeAnnotations").is_none_or(Value::is_object),
+        "Invalid WorkspaceEdit changes, documentChanges, or changeAnnotations"
+    );
+    Ok(())
+}
+
+fn unannotated_text_edits(items: &Value, annotations: &Value) -> Result<Vec<TextEdit>> {
+    let mut confirmations = Vec::new();
+    for item in items.as_array().context("Missing text edits")? {
+        workspace::annotation(item, annotations, &mut confirmations)?;
+    }
+    anyhow::ensure!(
+        confirmations.is_empty(),
+        "Workspace edit requires explicit annotation approval; no edits applied"
+    );
+    Ok(serde_json::from_value(items.clone())?)
+}
+
 /// Validate a workspace edit and produce descending scalar-range edits per file.
 /// Uses supplied open-document snapshots, reading unopened files synchronously;
 /// run off-thread. Rejects resource operations and ambiguous/stale edits without
@@ -882,14 +909,17 @@ pub fn plan_edit(
     snapshots: &BTreeMap<String, Snapshot>,
     encoding: Encoding,
 ) -> Result<Vec<PlannedDocument>> {
-    anyhow::ensure!(
-        !(edit["changes"].is_object() && edit["documentChanges"].is_array()),
-        "WorkspaceEdit must use changes or documentChanges, not both"
-    );
+    validate_workspace_edit(edit)?;
     let mut groups: BTreeMap<String, (Option<u64>, Vec<TextEdit>)> = BTreeMap::new();
     if let Some(changes) = edit["changes"].as_object() {
         for (uri, edits) in changes {
-            groups.insert(uri.clone(), (None, serde_json::from_value(edits.clone())?));
+            groups.insert(
+                uri.clone(),
+                (
+                    None,
+                    unannotated_text_edits(edits, &edit["changeAnnotations"])?,
+                ),
+            );
         }
     }
     if let Some(changes) = edit["documentChanges"].as_array() {
@@ -939,18 +969,7 @@ pub fn plan_edit(
                     "Stale or unopened document version"
                 );
             }
-            let edits = change["edits"].as_array().context("Missing text edits")?;
-            for edit_item in edits {
-                if let Some(annotation) = edit_item["annotationId"].as_str() {
-                    let annotation = &edit["changeAnnotations"][annotation];
-                    anyhow::ensure!(annotation.is_object(), "Unknown change annotation");
-                    anyhow::ensure!(
-                        annotation["needsConfirmation"] != true,
-                        "Workspace edit requires explicit annotation approval; no edits applied"
-                    );
-                }
-            }
-            let edits: Vec<TextEdit> = serde_json::from_value(change["edits"].clone())?;
+            let edits = unannotated_text_edits(&change["edits"], &edit["changeAnnotations"])?;
             for (range, replacement) in ranges(text, &edits, encoding)? {
                 text.remove(range.clone());
                 text.insert(range.start, &replacement);

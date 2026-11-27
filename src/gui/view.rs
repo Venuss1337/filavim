@@ -3000,7 +3000,7 @@ impl EditorView {
             let (title, detail, labels): (&str, &str, &[&str]) = match &confirm.decision {
                 Decision::Workspace { .. } => (
                     "Apply workspace edit?",
-                    "Approve applies this exact plan. Reject or Escape changes nothing. D toggles details. Up/Down and Page Up/Down inspect entries; Left/Right chooses the decision.",
+                    "Approval can change files on disk. Text edits stay unsaved and undoable. Reject or Escape leaves both unchanged. D shows the ordered changes.",
                     &["Approve", "Reject", "Cancel"],
                 ),
                 Decision::Recovery(_) => (

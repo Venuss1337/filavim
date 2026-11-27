@@ -48,7 +48,8 @@ flowchart TD
 | Cursor | [gui/cursor.rs](../src/gui/cursor.rs) is time-based four-corner simulation; [cursor_view.rs](../src/gui/cursor_view.rs) owns GPUI scheduling/clipping. The root caches editor content separately from cursor frames. No particles. |
 | Language services | [gui/services.rs](../src/gui/services.rs), `Services`: document sync, server selection/runtime instances, pending requests, syntax snapshots, diagnostics and popup state. `update`, `poll`, `request`, `accept` are the main integration points. |
 | Completion | [gui/completion.rs](../src/gui/completion.rs), `Session`/`Source`: context lifetime, provider snapshots, matching and edit rebasing. [completion_context.rs](../src/gui/completion_context.rs) provides conservative local TypeScript type keywords. |
-| Popup policy/chrome | [gui/popup.rs](../src/gui/popup.rs): headless placement and input routing. [floating.rs](../src/gui/floating.rs): shared GPUI styling/content helpers. The view owns focus, keyboard/mouse dispatch and popup rendering. |
+| Popup policy/chrome | [gui/popup.rs](../src/gui/popup.rs): headless placement and input routing. [floating.rs](../src/gui/floating.rs): float frame plus documentation/signature text styling. The view owns focus, keyboard/mouse dispatch and popup rendering. |
+| Design system | [gui/design.rs](../src/gui/design.rs): spacing, radii, type `Scale`, glass elevation and stateless components (button, row, badge, keycap/hints, heading, notch). [gui/icons.rs](../src/gui/icons.rs): named Nerd Font glyphs. Components never own state or listeners; [DESIGN.md](../DESIGN.md) is the visual contract. |
 | Notifications | [gui/toast.rs](../src/gui/toast.rs): controlled-time, bounded lifetime/stack model. [toast_view.rs](../src/gui/toast_view.rs): native translucent overlay, independent entity and single owned animation timer. Services queues application notices; command feedback remains in Editor. |
 | LSP transport | [lsp.rs](../src/lsp.rs), `Client`: process threads, framed JSON-RPC, initialization, synchronization, cancellation, events and shutdown. It never mutates editor state. |
 | LSP installation | [lsp_catalog.rs](../src/lsp_catalog.rs) defines curated packages; [lsp_manager.rs](../src/lsp_manager.rs) owns receipts/preferences/resolution and asynchronous tool operations. `gui/manager_view.rs` renders their real state. Installation and runtime status are separate. |
@@ -200,8 +201,9 @@ background work. Services has a bounded queue drained by EditorView; do not call
 GPUI entities directly from process threads. `EditorView::toast` is the native helper.
 
 Toasts are deferred above editor/popups in the top-right, below the custom title
-row, and do not reserve editor layout or request keyboard focus. Surfaces use a
-28% theme-base alpha tint, not an opaque imitation of the wallpaper. Shared strings
+row, and do not reserve editor layout or request keyboard focus. Cards use the
+shared floating glass (`design::glass`, `theme.surfaces.popup_opacity`) so code
+beneath never competes with the message. Shared strings
 are retained; the overlay does not notify/rebuild the editor on lifetime frames.
 One owned GPUI executor timer requests updates around 60 Hz only while needed.
 Reduced motion (`cursor.reduced_motion`) removes slide/fade; lifetime progress

@@ -16,6 +16,8 @@ Preserve Filavim's Rust editing engine in a responsive, lightweight GPUI desktop
 ## Brand Personality
 
 Restrained, precise, vivid. Cyberdream Dark is the default, with Muted, Light and Rosé Pine Moon alternatives. Preserve Agave Nerd Font Mono.
+The visual direction, "Night Glass" (transparent plane, smoked-glass floats, color as
+signal, mode color as the editor's pulse), is specified in [DESIGN.md](DESIGN.md).
 
 ## Anti-references
 

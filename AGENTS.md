@@ -26,6 +26,9 @@ declarations to determine whether a source file is active in this frontend.
 - `src/gui/explorer.rs`, `navigation.rs`, `gui/io.rs`, `files.rs`: project/file work.
 - `src/config.rs`, `appearance.rs`, `palette.rs`, `gui/theme.rs`, `gui/wallpaper.rs`:
   settings, semantic colors and cached imagery; font assets/licenses are in `assets/`.
+- `src/gui/design.rs`, `icons.rs`: design tokens, type scale, elevation, shared
+  components and glyphs. Read [DESIGN.md](DESIGN.md) before building or restyling UI;
+  compose from these components and theme roles instead of ad-hoc styling.
 - `tests/`, `src/gui/integration_tests.rs`, `scripts/test.ps1`: regression workflows.
   [docs/TESTING.md](docs/TESTING.md) describes exact commands, coverage and reporting limits.
 - Historical terminal sources remain in `src/`; they are not the native entry path.

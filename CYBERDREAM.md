@@ -32,7 +32,7 @@ italic_comments = false
 
 [theme.surfaces]
 editor_opacity = 0.0        # theme-colored tint over the wallpaper
-popup_opacity = 0.30        # visibly transparent floating tint; text stays opaque
+popup_opacity = 0.92        # smoked-glass floating surfaces; text stays opaque
 sidebar_opacity = 0.0       # wallpaper continues through the explorer
 
 [background]
@@ -61,7 +61,7 @@ Examples using the existing command bar:
 :set background.image=C:/Pictures/wallpaper.png
 :set background.fit=contain
 :set background.overlay_opacity=0.7
-:set theme.surfaces.popup_opacity=0.30
+:set theme.surfaces.popup_opacity=0.92
 :set background.enabled=false
 :BackgroundReload
 ```
@@ -74,26 +74,31 @@ In transparent mode the title/tabs row, status line and command line share the r
 wallpaper and readability overlay, rather than using nearly opaque panel fills.
 The active tab retains a translucent selection tint. Popup opacity stays independent.
 
-## Minimal floating UI refinement
+## Floating surfaces (Night Glass)
 
-Contextual completion, hover, signature help and documentation share native floating
-chrome: a 1px neutral outline, 30% default tint and a small corner `⚡`, cyan `i`, or
-diagnostic `!`. Assistance headers and the completion instruction footer are removed;
-centered pickers retain their useful labels. Selected completion rows use a subtle
-35% theme-highlight tint. Explicit saved popup opacity and opaque-mode preferences
-remain supported. No desktop transparency, blur, shadow or animation was added.
+The visual system is documented in [DESIGN.md](DESIGN.md). In summary: contextual
+completion, hover, signature help and documentation are minimal *smoked-glass*
+floats (default `popup_opacity` 0.92, 1px outline, 6px radius, soft shadow) with a
+small *signal notch* on the top edge: ⚡ completion, ⓘ documentation/hover, ƒ
+signature, ⚠ diagnostics. They size to their content and have no header or footer.
+Centered pickers and information panels add a titled header, a count and a keycap
+footer over a light scrim. Selected rows use a 50% theme-highlight tint in every
+mode. The earlier 0.30 default let code show through popups; an explicitly saved
+lower opacity is still honored. No desktop transparency, blur or chrome animation.
 
 Signature labels and function-like documentation headers receive lightweight syntax
 colors; the active signature parameter is cyan and bold, with validated UTF-8 spans.
-Prose retains its existing plain-text rendering; this is not a new Markdown engine.
+Prose gets line-level structure (headings, rules, bullets, inline/fenced code) so
+server markup markers are not shown verbatim; this is not a Markdown engine.
 Completion and signature help retain separate presentation when both are available.
 The secondary signature uses free space opposite the completion menu and stays hidden
 when there is insufficient non-overlapping space. Existing revision validation applies.
 
-The status separator is removed. The explorer's 3px resize hit region remains but
-has no visible fill. Mode text uses `-- NORMAL --`, `-- INSERT --`, `-- VISUAL --`,
-`-- COMMAND --` (and existing auxiliary mode labels), with semantic foreground colors
-and no badge background. Visual Line/Block and Replace are not existing backend modes.
+Docked chrome is separated by hairlines, not fills. The explorer's resize handle
+shows an accent tint on hover or drag. The mode appears as a tinted badge (`NORMAL`,
+`INSERT`, `VISUAL`, `COMMAND` and auxiliary labels) whose color also drives the
+active tab underline and the current line number. Visual Line/Block and Replace are
+not existing backend modes.
 
 Refinement verification: `cargo fmt`, `cargo check --locked`, three targeted signature/
 placement/coexistence tests and the existing palette/mode-color test passed. The
@@ -137,13 +142,14 @@ foreground when the existing engine has no more specific token.
 Diagnostics use red/yellow/blue/cyan. Cursor and insertion cursor use the foreground,
 matching upstream Cursor/ICursor. Normal floats use the base palette background,
 cyan titles and neutral borders; completion/documentation uses upstream's blended
-Blink border, cyan matches and Blink category colors. Selection and active tabs use
-`bg_highlight`. Search uses foreground-colored fill and a contrasting `bg_alt` text
-color through the existing shaped line.
+Blink border, cyan matches and Blink category colors. Selection uses `bg_highlight`;
+active tabs, the cursor line and list selection use translucent `bg_highlight`.
+Search matches keep their syntax colors under a cyan tint; the current match is
+filled more strongly and outlined, so navigation never reshapes text.
 
 Native adaptations: background alpha values are local compositor settings; current
-line fill is subdued with alpha, active line numbers retain the existing clear cyan
-accent, and native sidebar/chrome become transparent in transparent mode, sharing
+line fill is subdued with alpha, the active line number takes the mode color, and
+native sidebar/chrome become transparent in transparent mode, sharing
 the full-window tint. Opaque mode retains secondary palette surfaces. Neovim highlight
 inheritance is mapped into Filavim's existing token categories rather than porting Lua.
 The existing client has no LSP semantic-token rendering pipeline; this task does not

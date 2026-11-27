@@ -1,8 +1,8 @@
 //! Ordered workspace planning and recoverable resource commits. All disk work is
 //! performed by the service worker; the UI only reconciles the committed prefix.
 use super::{Encoding, Snapshot, ranges};
-use std::sync::atomic::{AtomicBool,Ordering};
-static NOT_CANCELLED:AtomicBool=AtomicBool::new(false);
+use std::sync::atomic::{AtomicBool, Ordering};
+static NOT_CANCELLED: AtomicBool = AtomicBool::new(false);
 use crate::files::{self, DiskState};
 use anyhow::{Context, Result, bail, ensure};
 use ropey::Rope;
@@ -198,8 +198,8 @@ fn target(uri: &Value) -> Result<PathBuf> {
     }
     Ok(resolved)
 }
-fn scan_cancellable(path: &Path, count: &mut usize,cancel:&AtomicBool) -> Result<State> {
-    ensure!(!cancel.load(Ordering::Relaxed),"Workspace edit cancelled");
+fn scan_cancellable(path: &Path, count: &mut usize, cancel: &AtomicBool) -> Result<State> {
+    ensure!(!cancel.load(Ordering::Relaxed), "Workspace edit cancelled");
     *count += 1;
     ensure!(
         *count <= MAX_ENTRIES,
@@ -213,7 +213,9 @@ fn scan_cancellable(path: &Path, count: &mut usize,cancel:&AtomicBool) -> Result
     };
     ensure!(!unsafe_link(&metadata), "Resource link rejected");
     if metadata.is_file() {
-        return Ok(State::File(files::disk_state_cancellable(path,||cancel.load(Ordering::Relaxed))?));
+        return Ok(State::File(files::disk_state_cancellable(path, || {
+            cancel.load(Ordering::Relaxed)
+        })?));
     }
     ensure!(metadata.is_dir(), "Unsupported filesystem object");
     let mut children = BTreeMap::new();
@@ -223,7 +225,7 @@ fn scan_cancellable(path: &Path, count: &mut usize,cancel:&AtomicBool) -> Result
             .file_name()
             .into_string()
             .map_err(|_| anyhow::anyhow!("Non-Unicode resource name"))?;
-        children.insert(name, scan_cancellable(&entry.path(), count,cancel)?);
+        children.insert(name, scan_cancellable(&entry.path(), count, cancel)?);
     }
     Ok(State::Directory(children, directory_identity(path)?))
 }
@@ -395,7 +397,14 @@ pub fn needs_ordered_plan(value: &Value) -> bool {
         || value.get("changeAnnotations").is_some()
 }
 /// Resolve and validate the entire sequence without changing disk or documents.
-pub fn plan(value:&Value,root:&Path,documents:Vec<OpenDocument>,encoding:Encoding)->Result<Plan,Failure>{plan_cancellable(value,root,documents,encoding,&NOT_CANCELLED)}
+pub fn plan(
+    value: &Value,
+    root: &Path,
+    documents: Vec<OpenDocument>,
+    encoding: Encoding,
+) -> Result<Plan, Failure> {
+    plan_cancellable(value, root, documents, encoding, &NOT_CANCELLED)
+}
 pub(crate) fn plan_cancellable(
     value: &Value,
     root: &Path,
@@ -404,7 +413,7 @@ pub(crate) fn plan_cancellable(
     cancel: &AtomicBool,
 ) -> Result<Plan, Failure> {
     let result = (|| -> Result<Plan> {
-        ensure!(!cancel.load(Ordering::Relaxed),"Workspace edit cancelled");
+        ensure!(!cancel.load(Ordering::Relaxed), "Workspace edit cancelled");
         ensure!(value.is_object(), "WorkspaceEdit must be an object");
         ensure!(
             value.get("changeAnnotations").is_none_or(Value::is_object),
@@ -450,7 +459,7 @@ pub(crate) fn plan_cancellable(
         let mut nodes = BTreeMap::new();
         let mut count = 0;
         for (index, change) in changes.iter().enumerate() {
-            ensure!(!cancel.load(Ordering::Relaxed),"Workspace edit cancelled");
+            ensure!(!cancel.load(Ordering::Relaxed), "Workspace edit cancelled");
             let uris = if change.get("kind").is_some() {
                 if change["kind"] == "rename" {
                     vec![&change["oldUri"], &change["newUri"]]
@@ -468,7 +477,7 @@ pub(crate) fn plan_cancellable(
                     })
                 })?;
                 if !initial.contains_key(&path) {
-                    let state = scan_cancellable(&path, &mut count,cancel).map_err(|e| {
+                    let state = scan_cancellable(&path, &mut count, cancel).map_err(|e| {
                         anyhow::anyhow!(Failure {
                             index,
                             reason: format!("{e:#}")
@@ -514,7 +523,7 @@ pub(crate) fn plan_cancellable(
         let mut steps = Vec::new();
         let mut confirmations = Vec::new();
         for (index, change) in changes.iter().enumerate() {
-            ensure!(!cancel.load(Ordering::Relaxed),"Workspace edit cancelled");
+            ensure!(!cancel.load(Ordering::Relaxed), "Workspace edit cancelled");
             let step = (|| -> Result<Step> {
                 annotation(change, &value["changeAnnotations"], &mut confirmations)?;
                 let reason_start=confirmations.len();
@@ -671,7 +680,9 @@ pub(crate) fn plan_cancellable(
                 _ => false,
             }) {
                 if let Some(baseline) = &document.baseline {
-                    files::verify_state_cancellable(&document.path, baseline,||cancel.load(Ordering::Relaxed))?;
+                    files::verify_state_cancellable(&document.path, baseline, || {
+                        cancel.load(Ordering::Relaxed)
+                    })?;
                 } else {
                     ensure!(
                         !document.path.exists(),
@@ -983,7 +994,7 @@ fn backup(
     expected: &State,
     backups: &mut Vec<PathBuf>,
     displaced: &mut Vec<PathBuf>,
-    cancel:&AtomicBool,
+    cancel: &AtomicBool,
 ) -> Result<()> {
     let directory = tempfile::Builder::new()
         .prefix(".filavim-lsp-backup-")
@@ -999,7 +1010,10 @@ fn backup(
     rename_no_replace(path, &directory.join("original"))?;
     displaced.push(path.to_path_buf());
     ensure!(
-        same_object(expected, &scan_cancellable(&directory.join("original"), &mut 0,cancel)?),
+        same_object(
+            expected,
+            &scan_cancellable(&directory.join("original"), &mut 0, cancel)?
+        ),
         "Resource changed at commit boundary; moved version preserved in backup"
     );
     Ok(())
@@ -1020,16 +1034,28 @@ fn collect_baselines(path: &Path, state: &State, output: &mut BTreeMap<PathBuf, 
 /// Commit only resource changes. Text remains in undoable, unsaved editor buffers.
 /// Cross-resource atomicity is not promised. Failures retain the successful prefix
 /// and any moved originals; no rollback overwrites potentially newer external data.
-pub fn execute(plan:Plan)->Outcome{execute_with_progress(plan,&NOT_CANCELLED,|_,_|{})}
-pub fn execute_with_progress(plan: Plan, cancel:&AtomicBool, mut progress:impl FnMut(usize,usize)) -> Outcome {
-    let total=plan.steps.len();
+pub fn execute(plan: Plan) -> Outcome {
+    execute_with_progress(plan, &NOT_CANCELLED, |_, _| {})
+}
+pub fn execute_with_progress(
+    plan: Plan,
+    cancel: &AtomicBool,
+    mut progress: impl FnMut(usize, usize),
+) -> Outcome {
+    let total = plan.steps.len();
     let mut outcome = Outcome {
         applied: Vec::new(),
         failure: None,
         backups: Vec::new(),
         displaced: Vec::new(),
     };
-    if cancel.load(Ordering::Relaxed){outcome.failure=Some(Failure{index:0,reason:"Workspace edit cancelled before execution".into()});return outcome;}
+    if cancel.load(Ordering::Relaxed) {
+        outcome.failure = Some(Failure {
+            index: 0,
+            reason: "Workspace edit cancelled before execution".into(),
+        });
+        return outcome;
+    }
     for (path, id) in &plan.parents {
         let result = (|| -> Result<()> {
             check_components(path)?;
@@ -1056,7 +1082,7 @@ pub fn execute_with_progress(plan: Plan, cancel:&AtomicBool, mut progress:impl F
     for (path, state) in &plan.initial {
         let result = (|| -> Result<()> {
             ensure!(
-                matches_state(state, &scan_cancellable(path, &mut 0,cancel)?),
+                matches_state(state, &scan_cancellable(path, &mut 0, cancel)?),
                 "Filesystem changed while awaiting approval: {}",
                 path.display()
             );
@@ -1077,7 +1103,13 @@ pub fn execute_with_progress(plan: Plan, cancel:&AtomicBool, mut progress:impl F
     }
     let mut created = BTreeMap::new();
     for step in plan.steps {
-        if cancel.load(Ordering::Relaxed){outcome.failure=Some(Failure{index:step.index,reason:"Workspace edit cancelled; completed prefix retained".into()});break;}
+        if cancel.load(Ordering::Relaxed) {
+            outcome.failure = Some(Failure {
+                index: step.index,
+                reason: "Workspace edit cancelled; completed prefix retained".into(),
+            });
+            break;
+        }
         let mut committed = false;
         let displaced_start = outcome.displaced.len();
         let result = (|| -> Result<BTreeMap<PathBuf, DiskState>> {
@@ -1092,12 +1124,14 @@ pub fn execute_with_progress(plan: Plan, cancel:&AtomicBool, mut progress:impl F
             let _guards = commit_guards(step.expected.iter().map(|(path, _)| path.clone()))?;
             for (path, state) in &step.expected {
                 let moved = if let Some(baseline) = created.get(path) {
-                    files::verify_state_cancellable(path, baseline,||cancel.load(Ordering::Relaxed))?;
+                    files::verify_state_cancellable(path, baseline, || {
+                        cancel.load(Ordering::Relaxed)
+                    })?;
                     true
                 } else {
                     false
                 };
-                let actual = scan_cancellable(path, &mut 0,cancel)?;
+                let actual = scan_cancellable(path, &mut 0, cancel)?;
                 ensure!(
                     if moved {
                         same_object(state, &actual)
@@ -1172,7 +1206,7 @@ pub fn execute_with_progress(plan: Plan, cancel:&AtomicBool, mut progress:impl F
                                 &step.expected[1].1,
                                 &mut outcome.backups,
                                 &mut outcome.displaced,
-                            cancel,
+                                cancel,
                             )?;
                         }
                         ensure!(
@@ -1182,7 +1216,7 @@ pub fn execute_with_progress(plan: Plan, cancel:&AtomicBool, mut progress:impl F
                         rename_no_replace(from, to)?;
                     }
                     committed = true;
-                    let after = scan_cancellable(to, &mut 0,cancel)?;
+                    let after = scan_cancellable(to, &mut 0, cancel)?;
                     ensure!(
                         same_object(&step.expected[0].1, &after),
                         "Renamed object changed at commit boundary; retained at destination"
@@ -1196,7 +1230,7 @@ pub fn execute_with_progress(plan: Plan, cancel:&AtomicBool, mut progress:impl F
                         &step.expected[0].1,
                         &mut outcome.backups,
                         &mut outcome.displaced,
-                            cancel,
+                        cancel,
                     )?;
                     committed = true;
                 }
@@ -1212,13 +1246,13 @@ pub fn execute_with_progress(plan: Plan, cancel:&AtomicBool, mut progress:impl F
                     _ => (),
                 }
                 created.extend(baselines.clone());
-                let completed=step.index+1;
+                let completed = step.index + 1;
                 outcome.applied.push(Applied {
                     step,
                     baselines,
                     displaced: outcome.displaced[displaced_start..].to_vec(),
                 });
-                progress(completed,total);
+                progress(completed, total);
             }
             Err(error) => {
                 outcome.failure = Some(Failure {

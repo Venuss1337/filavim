@@ -2097,8 +2097,13 @@ impl EditorView {
     }
     fn key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         self.services.file_busy = self.workspace_file_busy();
-        if self.services.workspace_executing || self.services.workspace_preparing() && event.keystroke.key=="escape" {
-            if event.keystroke.key=="escape"{self.services.cancel_workspace(&self.model);self.changed(cx);}
+        if self.services.workspace_executing
+            || self.services.workspace_preparing() && event.keystroke.key == "escape"
+        {
+            if event.keystroke.key == "escape" {
+                self.services.cancel_workspace(&self.model);
+                self.changed(cx);
+            }
             window.prevent_default();
             cx.stop_propagation();
             return;
@@ -4038,8 +4043,13 @@ impl Render for EditorView {
             "{}{}{}",
             path,
             if e.buffer.dirty() { "  [+]" } else { "" },
-            if let Some(status)=self.services.workspace_status(){format!("  ·  {status}")}
-            else if self.busy || self.tool_busy {"  ·  Working…".into()}else{String::new()}
+            if let Some(status) = self.services.workspace_status() {
+                format!("  ·  {status}")
+            } else if self.busy || self.tool_busy {
+                "  ·  Working…".into()
+            } else {
+                String::new()
+            }
         );
         let command = if e.mode == Mode::Command {
             format!("{}{}", if e.searching { "/" } else { ":" }, e.command)

@@ -158,8 +158,10 @@ pub enum DiskState {
         created: Option<std::time::SystemTime>,
     },
 }
-pub fn disk_state(path: &Path) -> Result<DiskState> {disk_state_cancellable(path,||false)}
-pub(crate) fn disk_state_cancellable(path:&Path,cancel:impl Fn()->bool)->Result<DiskState>{
+pub fn disk_state(path: &Path) -> Result<DiskState> {
+    disk_state_cancellable(path, || false)
+}
+pub(crate) fn disk_state_cancellable(path: &Path, cancel: impl Fn() -> bool) -> Result<DiskState> {
     use sha2::{Digest, Sha256};
     let mut file = match File::open(path) {
         Ok(file) => file,
@@ -173,7 +175,9 @@ pub(crate) fn disk_state_cancellable(path:&Path,cancel:impl Fn()->bool)->Result<
     let mut hash = Sha256::new();
     let mut bytes = [0; 65536];
     loop {
-        if cancel(){bail!("Operation cancelled");}
+        if cancel() {
+            bail!("Operation cancelled");
+        }
         let n = file.read(&mut bytes)?;
         if n == 0 {
             break;
@@ -245,9 +249,15 @@ impl std::fmt::Display for Conflict {
     }
 }
 impl std::error::Error for Conflict {}
-pub(crate) fn verify_state(path: &Path, expected: &DiskState) -> Result<()> {verify_state_cancellable(path,expected,||false)}
-pub(crate) fn verify_state_cancellable(path:&Path,expected:&DiskState,cancel:impl Fn()->bool)->Result<()> {
-    let actual = disk_state_cancellable(path,cancel)?;
+pub(crate) fn verify_state(path: &Path, expected: &DiskState) -> Result<()> {
+    verify_state_cancellable(path, expected, || false)
+}
+pub(crate) fn verify_state_cancellable(
+    path: &Path,
+    expected: &DiskState,
+    cancel: impl Fn() -> bool,
+) -> Result<()> {
+    let actual = disk_state_cancellable(path, cancel)?;
     if &actual != expected {
         return Err(Conflict { actual }.into());
     }

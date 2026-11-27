@@ -682,7 +682,9 @@ impl Services {
         Self {
             workspace_requests: BTreeSet::new(),
             workspace_keep: BTreeSet::new(),
-            workspace_cancel: Default::default(),workspace_progress: Default::default(),workspace_total:0,
+            workspace_cancel: Default::default(),
+            workspace_progress: Default::default(),
+            workspace_total: 0,
             workspace_task: None,
             workspace_approval: None,
             workspace_executing: false,
@@ -1858,7 +1860,10 @@ impl Services {
                             self.workspace_reply(&context, json!({"applied":false,"failureReason":error.to_string(),"failedChange":error.index}));
                             self.message = Some(error.to_string());
                         }
-                        Ok(_) if self.workspace_cancel.load(Ordering::Relaxed)=>{self.workspace_reply(&context,json!({"applied":false,"failureReason":"Workspace edit cancelled before execution"}));self.message=Some("Workspace edit cancelled before execution".into());}
+                        Ok(_) if self.workspace_cancel.load(Ordering::Relaxed) => {
+                            self.workspace_reply(&context,json!({"applied":false,"failureReason":"Workspace edit cancelled before execution"}));
+                            self.message = Some("Workspace edit cancelled before execution".into());
+                        }
                         Ok(plan) => {
                             let token = context.token;
                             let needs_confirmation = !plan.confirmations.is_empty();
@@ -2337,7 +2342,8 @@ impl Services {
     fn workspace_submit(&mut self, job: WorkspaceJob) {
         let (tx, rx) = std::sync::mpsc::channel();
         self.workspace_task = Some(rx);
-        let cancel=self.workspace_cancel.clone();let progress=self.workspace_progress.clone();
+        let cancel = self.workspace_cancel.clone();
+        let progress = self.workspace_progress.clone();
         std::thread::spawn(move || {
             let result = match job {
                 WorkspaceJob::Workspace {
@@ -2346,12 +2352,21 @@ impl Services {
                     context,
                     encoding,
                 } => {
-                    let result =
-                        lsp::workspace::plan_cancellable(&value, &root, context.documents.clone(), encoding,&cancel);
+                    let result = lsp::workspace::plan_cancellable(
+                        &value,
+                        &root,
+                        context.documents.clone(),
+                        encoding,
+                        &cancel,
+                    );
                     Prepared::Workspace(context, result)
                 }
                 WorkspaceJob::CommitWorkspace { plan, context } => {
-                    let outcome = lsp::workspace::execute_with_progress(plan,&cancel,|completed,_|{progress.store(completed,Ordering::Relaxed);crate::background::wake();});
+                    let outcome =
+                        lsp::workspace::execute_with_progress(plan, &cancel, |completed, _| {
+                            progress.store(completed, Ordering::Relaxed);
+                            crate::background::wake();
+                        });
                     let notifications = context
                         .subscriptions
                         .iter()
@@ -2379,15 +2394,35 @@ impl Services {
             self.workspace_task = Some(rx);
         }
     }
-    pub fn cancel_workspace(&mut self,docs:&Documents){
-        if let Some(approval)=&self.workspace_approval{let token=approval.token;self.workspace_answer(docs,token,false);}
-        else if self.workspace_active(){self.workspace_cancel.store(true,Ordering::Relaxed);self.message=Some("Workspace cancellation requested; committed changes and backups are retained".into());}
+    pub fn cancel_workspace(&mut self, docs: &Documents) {
+        if let Some(approval) = &self.workspace_approval {
+            let token = approval.token;
+            self.workspace_answer(docs, token, false);
+        } else if self.workspace_active() {
+            self.workspace_cancel.store(true, Ordering::Relaxed);
+            self.message = Some(
+                "Workspace cancellation requested; committed changes and backups are retained"
+                    .into(),
+            );
+        }
     }
-    pub fn workspace_preparing(&self)->bool{self.workspace_planning}
-    pub fn workspace_status(&self)->Option<String>{
-        if self.workspace_executing{Some(format!("Workspace edit: {}/{} processed · Esc cancels",self.workspace_progress.load(Ordering::Relaxed),self.workspace_total))}
-        else if self.workspace_planning{Some("Planning workspace edit · Esc cancels".into())}
-        else if self.workspace_approval.is_some(){Some("Review workspace edit".into())}else{None}
+    pub fn workspace_preparing(&self) -> bool {
+        self.workspace_planning
+    }
+    pub fn workspace_status(&self) -> Option<String> {
+        if self.workspace_executing {
+            Some(format!(
+                "Workspace edit: {}/{} processed · Esc cancels",
+                self.workspace_progress.load(Ordering::Relaxed),
+                self.workspace_total
+            ))
+        } else if self.workspace_planning {
+            Some("Planning workspace edit · Esc cancels".into())
+        } else if self.workspace_approval.is_some() {
+            Some("Review workspace edit".into())
+        } else {
+            None
+        }
     }
     pub fn workspace_active(&self) -> bool {
         self.workspace_planning || self.workspace_executing || self.workspace_approval.is_some()
@@ -2444,7 +2479,9 @@ impl Services {
             );
             return;
         }
-        self.workspace_cancel=Default::default();self.workspace_progress=Default::default();self.workspace_total=0;
+        self.workspace_cancel = Default::default();
+        self.workspace_progress = Default::default();
+        self.workspace_total = 0;
         self.workspace_planning = true;
         self.panel = None;
         self.signature = None;
@@ -2511,7 +2548,7 @@ impl Services {
                 )
             })
             .collect();
-        self.workspace_total=approval.plan.steps.len();
+        self.workspace_total = approval.plan.steps.len();
         self.workspace_executing = true;
         let affected: BTreeSet<_> = approval
             .context

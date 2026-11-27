@@ -1,404 +1,530 @@
-# FilaVim design system
+# FilaVim design system: Lucent
 
-This is the visual and interaction foundation for every FilaVim interface. It
-describes what the native GPUI application implements today. The contract lives in
-code: tokens and components in [`src/gui/design.rs`](src/gui/design.rs), glyphs in
-[`src/gui/icons.rs`](src/gui/icons.rs), and semantic colors in
-[`src/gui/theme.rs`](src/gui/theme.rs). If this document and those files disagree,
-the code is authoritative and this document needs fixing.
+Lucent is FilaVim's visual identity and the system that produces it. This document
+explains the idea behind the interface, the rules that keep it coherent, and the
+code that implements it. The code is the contract; if the two disagree, fix this
+document.
 
-Engineering boundaries (input latency, ownership, coordinate units) are in
-[AGENTS.md](AGENTS.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Theme and
-wallpaper configuration is in [CYBERDREAM.md](CYBERDREAM.md).
+| Concern | Source |
+|---|---|
+| Tokens, type scale, shell geometry, materials, components | [`src/gui/design.rs`](src/gui/design.rs) |
+| Semantic roles, palettes, glass qualities | [`src/gui/theme.rs`](src/gui/theme.rs), [`src/palette.rs`](src/palette.rs) |
+| The world, pane materials, mode light | [`src/gui/stage.rs`](src/gui/stage.rs) |
+| Frosted-glass bakes and the procedural atmosphere | [`src/gui/frost.rs`](src/gui/frost.rs) |
+| Springs and motion characters | [`src/gui/motion.rs`](src/gui/motion.rs) |
+| Shell composition (capsules, panes, footer, lenses, welcome) | [`src/gui/shell_view.rs`](src/gui/shell_view.rs) |
+| Editor surface (guides, rail, current line, selection) | `prepare`/`paint` in [`src/gui/view.rs`](src/gui/view.rs) |
+| Caret light | [`src/gui/cursor_view.rs`](src/gui/cursor_view.rs) |
+| Glyph names | [`src/gui/icons.rs`](src/gui/icons.rs) |
+
+Engineering boundaries (input latency, ownership, coordinate units) live in
+[AGENTS.md](AGENTS.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ---
 
-## 1. Direction: Night Glass
+## 1. The idea: glass in a lit world
 
-FilaVim is a precision instrument laid over the user's own wallpaper. The document
-is the subject. Around it, chrome is a quiet frame of hairlines and smoked glass,
-and color appears only where it carries meaning.
+Most editors are a rectangle of chrome around a rectangle of text. FilaVim is an
+instrument made of glass, resting in a place.
 
-Three ideas shape every screen:
+The **world** is the user's wallpaper, or, when none is set, a procedural night
+lit by soft colored glows. It fills the window and stays visible around and
+between everything else. On it rest **panes** of frosted glass (the explorer and
+the editor) and small **capsules** of glass (identity, tabs, window controls).
+There is no title bar and no status "bar": chrome has dissolved into objects.
 
-- **The plane and the glass.** The editor and its docked chrome are transparent
-  over the wallpaper (the *plane*). Anything that rises above the plane, such as a
-  completion menu, a picker, a toast or a dialog, is *smoked glass*: nearly opaque,
-  rounded, outlined with a hairline and lifted by a soft shadow. Code never shows
-  through glass, so floating content stays readable over any wallpaper.
-- **Color is signal.** Neon palette colors mean something: the current mode, a
-  search match, an error, an unsaved change, keyboard focus. Neutral greys carry
-  everything else. File-type and symbol-kind hues are the single exception, and they
-  identify things; they never report state.
-- **The mode is the pulse.** A modal editor's most important state is its mode.
-  One color per mode drives three places at the edges of attention: the status
-  badge, the active tab's underline and the current line number. You can read the
-  mode from any of them without looking at the status bar.
+Three ideas make it Lucent rather than a themed editor:
 
-What FilaVim is not: a web dashboard, a terminal imitation, a collection of cards,
-or a showcase of effects. There are no gradients, glows, blurs, decorative icons
-or idle animations in the chrome.
+1. **The world is part of the interface.** It is never dimmed to near-black or
+   hidden behind full-bleed panels. Glass lets its color through; a lit pane over
+   an emerald wallpaper is itself faintly emerald. Every user's FilaVim looks a
+   little like the place they put it in.
+2. **Light carries state.** The modal editor's most important state is its mode,
+   and the mode is a light: the mark's core, the caret and its bloom, the current
+   line number, the footer chip, the explorer's current-file light, and a tint
+   that settles into the lit rim of whichever pane holds focus. You feel a mode
+   change, and where your keystrokes go, at the edge of vision before you read it.
+3. **Material carries hierarchy.** Instead of borders and fills, surfaces are
+   made of a small set of materials (well, lens, plate, glass, pane), each lit
+   the same way from above. What a thing *is* tells you how it behaves.
+
+The lineage is deliberate. FilaScope and FilaMCUI established the vocabulary: one
+frosted slab with a lit upper rim, film grain, a gliding lens for selection, ink
+in a few emphasis levels, one signal hue, and springs with distinct characters.
+Lucent translates that vocabulary to a tool used for eight hours a day, where the
+document must always be the brightest, calmest thing on screen.
+
+### What Lucent is not
+
+Not a showcase of effects. Nothing pulses, shimmers or animates at rest. Glass
+never lowers code contrast. Motion never delays input. Decoration that does not
+carry meaning (a glow without state, a gradient without light) does not belong.
 
 ## 2. Principles
 
-1. **Code is the brightest, largest text on screen.** Chrome steps down in size
-   and luminance. When in doubt, make chrome quieter.
-2. **One idea per color.** Use a semantic role, never a palette literal. If a new
-   state has no role, add one to `Theme`; do not reuse an unrelated one.
-3. **Depth is structural.** Layer order, radius, outline and shadow always change
-   together. A surface's job determines its layer, not its appearance.
-4. **Keys are visible.** Every interactive surface shows the keys that operate it,
-   drawn as keycaps. A mouse affordance never replaces a keyboard path.
-5. **Never color alone.** State pairs color with a glyph, a word or a position
-   (an error count has an icon, a modified document says "modified").
-6. **Stillness by default.** Only the cursor and notifications move. Hover and
-   selection changes are immediate. Nothing in the chrome schedules frames.
-7. **Fit the content.** Floating surfaces size to what they show. Empty and
-   loading states are written in words, not left blank.
+1. **Code is the subject.** It is the largest running text, drawn on the calmest
+   glass. Chrome is smaller, dimmer and further from the center.
+2. **Legibility is guaranteed, not hoped for.** Glass may be thin because the bake
+   clamps luminance (§4.3). Ink is always drawn at full alpha.
+3. **One light, from above.** Every raised surface has the same key light: a lit
+   top rim that tapers along the corners, a faint inner sheen, a soft shadow below.
+   Never light a surface from another direction.
+4. **Color is signal.** The signal hue (`accent`) marks focus, primary actions and
+   unsaved work; mode lights mark the mode; severities mark outcomes. Everything
+   else is ink. Identity hues (file types, symbol kinds) identify; they never
+   report state.
+5. **Depth is structural.** A surface's job decides its layer; its layer decides
+   material, radius, shadow and motion together.
+6. **Keys are visible.** Every instrument shows the keys that drive it, as keycaps.
+7. **Still at rest.** A settled FilaVim schedules no frames. Motion exists only to
+   explain a change, and ends.
+8. **Never color alone.** State pairs color with a glyph, a word or a position.
 
-## 3. Layers and composition
-
-Layers from back to front. Each has exactly one surface treatment.
-
-| Layer | Surfaces | Fill | Edge | Radius | Shadow |
-|---|---|---|---|---|---|
-| Wallpaper | Window background | `base`, then image and readability tint | none | 0 | none |
-| Plane | Editor viewport, gutter | `editor` (transparent by default) | none | 0 | none |
-| Docked chrome | Title row, explorer, status bar, command bar | `chrome` / `sidebar` (transparent by default) | 1 px `hairline` | 0 | none |
-| Floating glass | Completion, documentation, hover, signature, pickers, toasts | `overlay` at `popup_opacity` | 1 px `popup_border` @ 60% | `radius::FLOAT` 6 | `Elevation::Floating` |
-| Modal glass | Confirmation dialogs, Language Server Manager | `overlay` over `scrim` | 1 px `popup_border` @ 60% | `radius::MODAL` 8 | `Elevation::Modal` |
-| Cursor | Cursor entity | `cursor` | none | n/a | none |
-
-Docked regions are separated by hairlines, never by fills. Floating and modal
-surfaces are built with `design::glass(theme, level)`; modal ones sit on
-`design::scrim(theme, viewport)`. Centered pickers dim the editor with a lighter
-scrim, at 60% of `scrim`, that has no listeners, so a click outside still dismisses.
-
-### Shell anatomy
+## 3. Composition
 
 ```text
-┌──────────────┬──────────────────────────────────────────────┬──┬──┬──┐
-│ ◧ PROJECT    │ ▣ main.rs  ×  ▣ lib.rs ●                     │ ─│ □│ ×│ title row: Scale::title_bar()
-├──────────────┼──────────────────────────────────────────────┴──┴──┴──┤ hairline
-│ › ▢ src      │  12  fn main() {                                       │
-│   ▣ main.rs  │  13      let x = 1;          ← cursor line band        │ plane
-│   ▣ lib.rs   │  14  }                                                  │
-│ explorer     │ gutter (numbers right-aligned, ● severity marks)       │
-├──────────────┴────────────────────────────────────────────────────────┤ hairline
-│ NORMAL  ▣ src/main.rs modified · ⟳ Working…          ⌕ 2/9  ⊗0 ⚠1  12:5 │ status: Scale::status_bar()
-│ :command input or feedback                                            │ command: code line height
-└───────────────────────────────────────────────────────────────────────┘
+ world ─────────────────────────────────────────────────────────────────────────
+ ╭◉ project ◧╮          ╭─[ lens: main.rs ]── lib.rs ──╮          ⟳ work  ⊖ ⊕ ⊗   capsule row
+ ╭ explorer pane ╮ ╭ editor pane ─────────────────────────────────────────────╮
+ │ FILES      30 │ │   12  fn main() {          ╭ : command lens ──────────╮ ▮ │
+ │ › src         │ │   13  │   let x = 1;       ╰──────────────────────────╯ │ │  overview rail
+ │   main.rs   ● │ │   14  }                    ╭ results hang from lens ──╮ │ │
+ │               │ │                            ╰──────────────────────────╯ │ │
+ │               │ │ ───────────────────────────────────────────────────────── │
+ │               │ │ ● NORMAL  ⧉ src/main.rs · feedback     ⊗ 0 ⚠ 1  Ln 12 Col 5 │  footer instrument
+ ╰───────────────╯ ╰───────────────────────────────────────────────────────────╯
+ world ─────────────────────────────────────────────────────────────────────────
 ```
 
-- The explorer column runs from the title row to the status bar. The title row's
-  leading segment is exactly as wide as the explorer, so one vertical hairline
-  divides the window. With the explorer hidden, the segment collapses to the
-  sidebar toggle.
-- The active tab has a translucent fill and a 2 px underline in the mode color.
-  Inactive tabs are text only; the close control appears on hover, and an unsaved
-  document shows an accent dot that the close control replaces under the pointer.
-- On Windows and Linux the title row ends in 46 px caption controls. On Windows they
-  use native hit-testing (`WindowControlArea`), which provides Snap Layouts. On
-  macOS the row reserves space for the system traffic lights and draws none.
-- The status bar reads from left to right: mode badge, document identity
-  (directory muted, name bright, "modified" in accent), transient work, then a
-  flexible gap, then search position, diagnostics (only when a server is attached
-  or diagnostics exist) and the cursor position.
-- The command bar is exactly one code line tall because the command-line caret
-  shares its geometry. Outside Command mode it shows feedback: secondary text, or
-  `error` text with an error glyph.
+`design::Shell::new(viewport, scale, docked, sidebar)` is the single source of
+geometry. The stage paints materials from it and the editor lays content out in
+it; never compute pane bounds anywhere else.
 
-## 4. Color
-
-All colors are resolved once per settings change in `Theme::new`. Renderers read
-roles; they never hold hex values.
-
-### Semantic roles
-
-| Role | Use |
-|---|---|
-| `text` | Primary content, the active item, titles |
-| `secondary` | Supporting text, inactive tabs and rows, labels |
-| `muted` | Tertiary text: meta, hints, empty states, disabled controls |
-| `accent` | Keyboard focus ring, primary actions, unsaved marker, IME underline |
-| `matched` | Matched characters in completion; documentation and signature signals |
-| `success` / `warning` / `error` / `info` / `hint` | Outcome and severity only |
-| `mode(mode)` | Normal, Insert, Visual and Command identity (see below) |
-| `base` | Window background and scrim tint |
-| `editor`, `chrome`, `sidebar` | Plane and docked surfaces (transparent over wallpaper) |
-| `overlay` | Glass fill for floating and modal surfaces |
-| `border` / `hairline` / `popup_border` | Strong border, docked separators, glass outline |
-| `hover` / `pressed` | Interaction tints derived from `text` (6–12% alpha) |
-| `popup_selection` | Selected row in any list |
-| `selection`, `active_line`, `active_tab` | Text selection, cursor line band, active tab fill |
-| `search` / `search_text` | Search-match fill and its text |
-| `gutter`, `cursor`, `punctuation`, syntax tokens | Editor rendering |
-| `scrim` / `shadow` | Modal dimming and elevation shadows only |
-| `hue(Hue)` | Identity colors: file types and symbol kinds. Never state. |
-
-Interaction tints are derived from the foreground, so the same tint reads correctly
-over an opaque surface and over the wallpaper. The cursor line band, active tab and
-list selection are translucent in every mode for the same reason.
-
-### Mode colors
-
-| Mode | Cyberdream | Rosé Pine Moon |
+| Measure | Value | Notes |
 |---|---|---|
-| Normal | blue | pine |
-| Insert | green | foam |
-| Visual | purple | iris |
-| Command and others | cyan | foam |
+| Frame of world (`margin`) | 12 px, 8 px when maximized/fullscreen | Panes never touch the window edge |
+| Gap between panes | 10 px | World is visible between panes |
+| Capsule height | `control() + 6` (35 at 18 px code) | Top row of floating capsules |
+| Panes begin at | `margin + capsule + 8` | |
+| Pane radius | `radius::SLAB` 18 | |
+| Explorer width | user resizable 160–600, clamped to keep the editor ≥ 280 | Drag its right edge |
 
-### Themes and transparency
+The top row has no bar. Bare world anywhere outside a pane or capsule moves the
+window (double-click zooms); capsules stop that propagation. Windows caption
+plates use native hit testing (`WindowControlArea`), which keeps Snap Layouts.
+On macOS the row reserves no caption plates.
 
-Cyberdream Dark is the default, with Muted and Light variants, and Rosé Pine Moon
-is available as an alternative. Every component must be checked in Dark, Light and
-Rosé Pine Moon, with and without `theme.transparent`.
+## 4. Materials and light
 
-`theme.surfaces.popup_opacity` defaults to **0.92**. Glass must stay nearly opaque
-because floating surfaces cover code; at lower values the text beneath competes with
-the glass content. Docked chrome stays fully transparent, so the wallpaper remains
-continuous across the window. Users can still lower the value explicitly.
+### 4.1 The material vocabulary
 
-## 5. Typography
-
-FilaVim uses one face: the bundled **Agave Nerd Font Mono**, regular weight only.
-Hierarchy comes from size, luminance and position, never from bold or italic
-chrome. (Italics are reserved for the optional `italic_comments` syntax setting.)
-Everything is monospaced, including chrome, which gives the interface its
-instrument-panel character and makes widths predictable.
-
-`design::Scale::new(font_size)` derives the whole scale from the configured code
-size:
-
-| Step | Formula | At the default 18 px | Use |
+| Material | What it is | Built by | Used for |
 |---|---|---|---|
-| `code` | `font_size` | 18 | Document text, completion labels, hover and signature content, command input |
-| `ui` | `round(code × 0.84)`, clamped 12–17 | 15 | Tabs, explorer, pickers, dialogs, panel titles |
-| `small` | `ui − 2` (min 11) | 13 | Status bar, buttons, meta, secondary paragraphs |
-| `micro` | `ui − 3` (min 10) | 12 | Keycaps, section labels, counts, timestamps |
+| **World** | The image behind everything | `Stage` | Wallpaper or atmosphere, with `world_tint` |
+| **Pane** | Large frosted glass resting in the world | `Stage` (bake or gradient) | Explorer, editor (future: splits, terminal) |
+| **Glass** | Near-opaque floating glass above panes | `design::glass`, `design::capsule` | Popups, pickers, toasts, dialogs, capsules |
+| **Well** | A recess cut into glass | `design::well` | Segmented tracks, search fields |
+| **Lens** | A raised, brighter pane marking *the* selection | `design::lens` | Active tab, selected row, active segment, rail thumb |
+| **Plate** | A control resting on glass | `design::button`, `keycap`, `icon_button` | Actions, keys, caption controls |
+| **Light** | A small luminous dot | `design::light`, `design::mark` | Mode, unsaved state, status |
 
-Section labels are `micro`, `muted` and UPPERCASE (`design::section`). Paths in
-chrome are shown relative to the project root, with the Windows verbatim prefix
-removed (`design::display_path`, presentation only).
+There is exactly one lens per selection group. A lens may glide (§7); a
+well never moves.
 
-## 6. Spacing, sizing and radius
+### 4.2 The key light
 
-The spacing scale is a 2/4 px grid in `design::space`:
+Every raised surface is lit from above, identically:
 
-| Token | px | Typical use |
+- **Rim**: `design::rim` draws a rounded quad with only a top border. GPUI tapers
+  a single-side border along rounded corners, which produces a crescent: full
+  brightness across the top edge, fading to nothing down the upper corners. This
+  is the same light FilaMCUI computes in its surface shader, achieved here with a
+  stock primitive. Panes get theirs from the stage; floats, lenses and plates from
+  their component.
+- **Sheen**: a short `sheen` → transparent gradient just inside the top edge.
+- **Edge**: a dim 1 px outline (`edge`) that the rim fades into.
+- **Shadow**: two layers, a broad ambient shadow offset downward and a tight
+  contact shadow, so surfaces read as lifted rather than outlined.
+
+| Layer | Ambient shadow | Contact shadow |
 |---|---|---|
-| `XXS` | 2 | Gap between tabs, segmented-control inset |
-| `XS` | 4 | List side padding, icon–label gaps in dense rows |
-| `SM` | 6 | Icon–text gap, keycap groups |
-| `MD` | 8 | Row padding, toolbar gaps |
-| `LG` | 12 | Panel side padding, status bar segments, dialog sections |
-| `XL` | 16 | Dialog and manager padding |
-| `XXL` | 24 | Margin between modals and the window edge |
+| Pane | 0, 16 · blur 40 · spread −8 · `shadow`×0.7 | 0, 2 · blur 5 · ×0.45 |
+| Floating glass | 0, 10 · blur 28 · spread −4 | 0, 1 · blur 3 · ×0.6 |
+| Modal glass | 0, 24 · blur 64 · spread −4 | 0, 1 · blur 3 · ×0.6 |
+| Lens | — | 0, 1 · blur 4 · ×0.5 |
 
-Component heights scale with the type (`Scale` methods): `title_bar()` (36 px at
-default), `status_bar()` (29), `row()` (26) and `control()` (27). The completion
-row height follows the code size instead: `ceil(code × 1.5) + 4`.
+### 4.3 Frosted panes
 
-Radii in `design::radius`: docked chrome is square, `CONTROL` 4 for buttons, rows,
-tabs, badges and keycaps, `FLOAT` 6 for floating glass and `MODAL` 8 for dialogs.
-Depth is legible from the corners alone.
+GPUI 0.2.2 has no backdrop sampling or custom shaders, and the world is a static
+image. So a frosted pane is a texture, baked off the UI thread
+([`frost.rs`](src/gui/frost.rs)):
 
-## 7. Components
+1. **World reduction**, once per image: a box-filtered copy at most 480 px wide,
+   blurred with three box passes of radius 8 (≈ Gaussian). Clear glass keeps a
+   1280 px sharp copy instead.
+2. **Bake**, once per pane geometry: for each device pixel of the pane, sample the
+   reduced world through the same cover/contain mapping the stage paints with,
+   apply `background.opacity` and `world_tint`, mix the glass gradient
+   (`glass_top` → `glass_bottom`), apply the **legibility clamp**, then add
+   film grain.
+3. **Paint**: one textured quad per pane, with the pane's corner radii.
 
-Components are free functions returning unattached GPUI elements. The caller owns
-ids, listeners, focus and state, so one implementation serves the editor, popups
-and the manager. Compose these components rather than restyling raw `div()`s.
+The **legibility clamp** is what lets Lucent glass stay thin. After tinting, each
+pixel's relative luminance passes a soft knee: dark glass compresses anything
+above 60 % of a 0.05 ceiling smoothly toward 0.05; light glass lifts anything
+below a 0.62 floor. Hue and saturation survive, so a vivid world still colors the
+glass, but comments (`muted` ink) keep at least ~3:1 and code ink ~9:1 contrast on
+any wallpaper.
 
-| Component | Purpose and rules |
+Grain is a stable per-pixel hash of ±5 (dark) or ±3 (light) 8-bit steps. It gives
+the glass a material surface and removes gradient banding.
+
+Bakes are keyed by every input that changes their pixels (viewport, pane rect,
+scale factor, fit, opacity, all tints, grain, clamp). The first bake is
+immediate; later ones wait 90 ms so a live resize bakes once at the end, while the
+previous texture stretches. Results are generation-checked, and replaced textures
+are released from the sprite atlas. Until a bake exists, and always for solid
+glass, a pane is a gradient quad of the same tint.
+
+### 4.4 Glass qualities
+
+`[theme] glass = "frosted" | "clear" | "solid"` (FilaScope's three qualities).
+`theme.transparent = false` forces solid glass and a plain world.
+
+| Quality | World under glass | Pane alpha (dark) | Pane alpha (light) |
+|---|---|---|---|
+| `frosted` (default) | Blurred | 0.42 → 0.66 | 0.55 → 0.74 |
+| `clear` | Sharp | 0.62 → 0.80 | 0.70 → 0.84 |
+| `solid` | Hidden | 1 | 1 |
+
+Floating glass uses `theme.surfaces.popup_opacity` (default 0.92) for its top and
++0.04 for its bottom. It is deliberately near-opaque: it covers code, and code
+beneath must never compete with what floats above it.
+
+### 4.5 The world
+
+`background.image` sets the wallpaper (PNG, JPEG or WebP, bounded decode,
+relative paths resolve against the configuration directory). `background.fit`,
+`background.opacity` and `background.overlay_opacity` (the `world_tint`, default
+0.15) shape it. With no image, the stage generates the **atmosphere**: a
+1600 × 1000 night gradient in `base` lit by four broad glows in theme hues (aqua,
+the accent, lilac, mint), screen-blended and grained. It regenerates when the
+palette changes. `background.enabled = false` leaves a plain world.
+
+## 5. Color
+
+`Theme::new` resolves every role once per settings change. Renderers read roles;
+they never hold hex values or palette constants.
+
+### 5.1 Roles
+
+| Family | Roles | Meaning |
+|---|---|---|
+| Ink | `text`, `secondary`, `muted`, `faint` | One hue at four emphasis levels; always opaque |
+| Signal | `accent`, `matched` | Focus, primary action, unsaved state, matched characters |
+| Mode | `mode(mode)` | Normal, Insert, Visual, Command lights |
+| Outcome | `success`, `warning`, `error`, `info`, `hint`; `diagnostic(n)` | Severities and results only |
+| World | `base`, `world_tint` | Night color, tint over the wallpaper |
+| Materials | `glass_top/bottom`, `float_top/bottom`, `rim`, `edge`, `sheen`, `well`, `well_edge`, `lens_top/bottom/edge` | §4 |
+| Interaction | `hover`, `pressed`, `hairline`, `popup_selection` | Ink-derived tints (6–10 %) |
+| Depth | `scrim`, `shadow` | Modal dimming and shadows only |
+| Editor | `selection`, `active_line`, `gutter`, `search`, `punctuation`, `token(t)` | Text surface |
+| Identity | `hue(Hue)`, `completion_kind(n)` | File types and symbol kinds; never state |
+
+### 5.2 Lucent palette
+
+Pastel and evenly bright, so no token class shouts; tuned for luminous glass.
+
+| Name | Dark | Light | Roles |
+|---|---|---|---|
+| night | `#080c14` | `#dfe5ee` | `base` |
+| glass top / bottom | `#222b3a` / `#0d1119` | `#fdfeff` / `#eef2f8` | pane tint |
+| ink 1–4 | `#f1f4f9` `#b6c1d1` `#7b889c` `#4d586a` | `#161d29` `#3f4a5c` `#6b7689` `#9fa8b7` | text, secondary, muted (comments), faint (gutter) |
+| ice | `#7db4f4` | `#2766c4` | accent, info, functions, Normal |
+| mint | `#72dcae` | `#11845a` | success, snippets, Insert |
+| lilac | `#b9a4f6` | `#6248c9` | keywords, hints, Visual |
+| amber | `#f5b84a` | `#a76800` | warnings, Command |
+| coral | `#f2735f` | `#c53d2b` | errors |
+| aqua | `#79dcd6` | `#0b7f86` | types |
+| sage | `#a9dc9c` | `#3b7f2c` | strings |
+| peach | `#f3b98d` | `#ae5a20` | numbers, booleans |
+| rose | `#f494aa` | `#bf345a` | control flow |
+| orchid | `#e3a3ee` | `#9535a8` | `self`, `null`, constants |
+| gold | `#e9c87e` | `#8a6400` | attributes, preprocessor, search matches |
+| slate | `#95a4ba` | `#5b6880` | operators, punctuation |
+
+`variant = "muted"` keeps the dark glass with calmer hues. Cyberdream and Rosé Pine
+Moon remain available as syntax palettes (`theme.name`); their materials are
+derived from their own backgrounds by the same rules, so every palette gets the
+same glass, light and composition.
+
+### 5.3 Mode lights
+
+| Mode | Lucent | Cyberdream | Rosé Pine Moon |
+|---|---|---|---|
+| Normal | ice | blue | pine |
+| Insert | mint | green | foam |
+| Visual | lilac | purple | iris |
+| Command and others | amber | cyan | gold |
+
+The mode color appears in: the mark's core (identity capsule), the caret and its
+bloom, the current line number (bold), the footer chip, the explorer's
+current-file light and, at reduced strength (45 % dark, 25 % light), the rim of
+the **focused pane** and a broad glow in the world above the editor pane.
+Unfocused panes keep a neutral rim at 70 % strength: focus is light. Rims and
+glow settle with the `Settle` spring; everything else changes instantly.
+
+## 6. Typography
+
+FilaVim uses one family: **Agave Nerd Font Mono**, bundled in Regular and Bold.
+Everything is monospaced, chrome included, which gives the interface its
+instrument character and makes widths predictable (the tab well computes tab
+positions from the advance instead of measuring).
+
+`design::Scale::new(font_size)` derives the scale from the code size:
+
+| Step | Formula | At 18 px | Use |
+|---|---|---|---|
+| `display` | `round(code × 3.4)`, 40–96 | 61 | The welcome wordmark; reserved for heroes |
+| `code` | `font_size` | 18 | Document, completion labels, hover and signature text, command input |
+| `ui` | `round(code × 0.84)`, 12–17 | 15 | Tabs, explorer, pickers, dialog titles |
+| `small` | `ui − 2` (≥ 11) | 13 | Footer, buttons, secondary paragraphs |
+| `micro` | `ui − 3` (≥ 10) | 12 | Keycaps, section labels, counts, timestamps |
+
+**Bold** marks identity and emphasis, never decoration: the project name, panel
+and toast titles, section labels, the mode chip, the current line number, the
+command-lens chip and the wordmark. Body text, code and labels stay Regular.
+Chrome is never italic; italics belong to the optional `italic_comments`.
+
+Section labels are `micro`, `muted`, bold and UPPERCASE (`design::section`). Paths
+are relative to the project root with the Windows verbatim prefix removed
+(`design::display_path`, presentation only).
+
+## 7. Motion
+
+Motion explains change and then stops. Owners sample a `motion::Motion` while
+rendering and request another frame only while it is `active()`.
+
+| Character | Tuning | Feel | Used by |
+|---|---|---|---|
+| `Quick` | 7 Hz, ζ 1.0 | Immediate, no overshoot | Reserved for hover/press feedback |
+| `Glide` | 3.6 Hz, ζ 0.86 | Brisk travel, a trace of overshoot | Tab lens position and width; command lens entrance |
+| `Settle` | 2.2 Hz, ζ 1.0 | Calm, ambient | Mode light on rims and world glow |
+
+Other motion, each owned by its own entity:
+
+- **Caret**: the four-corner simulation in `cursor.rs` (configured by `cursor.*`),
+  now drawn in the mode color with a 10 px bloom on settled frames.
+- **Toasts**: 180 ms entrance, 220 ms exit, lifetime bar; one owned timer.
+
+Rules:
+
+- Motion is presentation only. It never decides an edit position, and logical
+  state is always current before anything animates.
+- Typing-driven surfaces (completion, signature help) appear instantly.
+- Springs retarget without restarting; a stall longer than 0.5 s settles instead
+  of replaying.
+- `cursor.reduced_motion = true` snaps every spring and removes toast slides.
+- The stage is a cached root sibling *beneath* the editor and the caret a sibling
+  above it, so ambient light and caret frames never rebuild editor layout.
+
+## 8. Components
+
+Components are stateless functions in `design.rs` returning unattached GPUI
+elements. Callers own ids, listeners, focus and state.
+
+| Component | Contract |
 |---|---|
-| `glass(theme, Elevation)` | Floating or modal surface: fill, outline, radius and shadow. |
-| `scrim(theme, viewport)` | Full-window dim beneath a modal. It handles no input itself. |
-| `typeface(div, theme, size)` | Root font, size and text color for an independent overlay entity. |
-| `icon(glyph, size, color)` | A glyph in a square, centered slot so icons align in columns. |
-| `icon_button(theme, id, glyph, size, extent)` | Chrome-only square control (sidebar toggle, close). |
-| `button(theme, scale, id, label, Tone, enabled, focused)` | Text action. `Primary` marks the recommended choice (at most one per group), `Secondary` is ordinary, `Ghost` is low emphasis, and `Danger` destroys or discards data and is never the default. `focused` draws the accent focus ring. Disabled buttons keep their layout, lose hover and pointer, and get no listener. |
-| `row(theme, id, selected)` | Full-width selectable list row with rounded selection and hover. Its list gets `space::XS` side padding so the selection reads as inset. |
-| `badge(text, color, size)` | Tinted state pill (16% fill): the mode, server state, scope, trust. Not clickable. |
-| `keycap(theme, scale, key)` and `hints(theme, scale, &[(keys, meaning)])` | Keyboard hints. Every panel footer uses `hints`. |
+| `Shell::new(viewport, scale, docked, sidebar)` | The composition (§3). `panes()` lists pane bounds, explorer first. |
+| `glass(theme, Elevation)` / `capsule(theme, Elevation, corner)` | Floating or modal glass with gradient, edge, rim, sheen and shadow. Capsules take an explicit radius (pills). |
+| `well(theme, corner)` | Recess for tracks and fields. |
+| `lens(theme, corner)` | The selection pane; children sit on it. |
+| `rim(color, corner)` / `sheen(theme, corner, height)` | Key-light parts for custom surfaces; add as first children of a surface with a 1 px border. |
+| `shadow(theme, Elevation)` | Shadow stacks; `glass` already applies them. |
+| `scrim(theme, viewport)` | Full-window dim beneath a modal; no listeners. |
+| `mark(color, size)` | The FilaVim mark: a glass lens whose core is lit in `color`. |
+| `light(color, size)` | A status light with a soft glow. |
+| `button(theme, scale, id, label, Tone, enabled, focused)` | Pill plate. `Primary` is the recommended choice (≤ 1 per group), `Secondary` ordinary, `Ghost` plate-less until hovered, `Danger` destroys data and is never default. Focus adds an accent ring and glow. |
+| `icon_button(theme, id, glyph, size, extent)` | Round, plate-less until hovered. |
+| `row(theme, id, selected)` | List row; the selected row is a lens. Lists get `space::XS`–`SM` side padding. |
+| `badge(text, color, size)` | State chip: light + label on a faint tint. Not clickable. |
+| `keycap(theme, scale, key)` / `hints(theme, scale, &[(keys, meaning)])` | Keys as small plates; every instrument shows its keys. |
 | `section(theme, scale, text)` | Uppercase group label. |
-| `heading(theme, scale, glyph, color, title)` | Panel title with its signal glyph. |
+| `heading(theme, scale, glyph, color, title)` | Panel title with its signal glyph (bold). |
+| `notch(theme, glyph, color, size)` | A small glass tab on a minimal float's top edge naming its source. |
 | `divider(theme)` | Horizontal hairline. |
-| `notch(theme, glyph, color, size)` | The *signal notch*, a small glyph seated on the top edge of a minimal floating surface that names its source: ⚡ completion (warning), ⓘ documentation or hover (matched), a symbol glyph for signature help (matched), ⚠ diagnostics. |
+| `icon(glyph, size, color)` | A glyph in a square slot so mixed icons align. |
 | `severity(theme, n)` | LSP severity → (glyph, color). |
-| `shadow(theme, Elevation)` | Elevation shadows; only `glass` should need it. |
+| `typeface(div, theme, size)` | Root font setup for an independent overlay entity. |
 
-### Composed patterns
+## 9. The shell
 
-- **Minimal float** (completion, hover, signature, documentation): `floating::frame`
-  plus a notch. It has no header or footer and is positioned at the caret by
-  `popup::place` and `popup::assistance`. Its height fits the content: the row count
-  for lists, and a monospace wrap estimate for text, capped at 320 px. Below the
-  caret they shrink-wrap, using the estimate only as a ceiling.
-- **Documentation text** (loating::documentation): line-level structure for
-  what servers send (ATX headings in 	ext, --- as a hairline, bullets with a
-  muted dot, fenced and inline code in 	ext, prose in secondary). A
-  function-like first line keeps signature coloring. It is not a Markdown engine.
-- **Diagnostics float:** each item is a top-aligned severity glyph, the message in
-  	ext and a micro muted server · line:col line.
-- **Picker / centered panel** (commands, files, grep, buffers, symbols, info): a
-  frame, a header (`heading` plus an `n / total` count), a divider, a list of `row`s
-  with leading icons, a divider, then a `hints` footer. It sits over a light scrim.
-  An empty panel says "Nothing to show yet."
-- **List row content:** leading `icon` (file type, symbol kind or muted chevron for
-  commands), a label that ellipsizes, then optional right-aligned `muted` meta (the
-  completion kind). Matched characters use `matched`.
-- **Dialog** (`confirmation_dialog`): a scrim, then modal glass up to 600 px wide
-  that fits its content. It contains a heading with the decision glyph (warning for
-  data risk, error for destructive overwrite, history for recovery), a subject line
-  (file icon plus a relative path), a secondary explanation, an optional well of
-  details, a divider, and a footer with key hints on the left and toned buttons on
-  the right. Choices keep their order and indices; arrow keys move the focus ring.
-- **Manager** (Language Server Manager): modal glass with a header (identity plus
-  scope and trust badges and a close control), a toolbar (a search field drawn as an
-  input with an accent caret, a segmented filter control showing F-keys, ghost
-  refresh actions), a maintenance row, a catalog | details split, then the operation,
-  error and confirmation banners and a shortcut strip. Details use
-  `section`-labelled groups and a key/value grid.
-- **Banner:** a tinted fill (6–8%) and a 30–60% border in the severity color, with
-  a glyph and text. Used for warnings, errors and in-panel confirmations, and for the
-  missing-tools notice above the status bar.
-- **Toast:** glass card with a category glyph, the title in `text`, a `micro`
-  timestamp and a close icon button, the message in `secondary` `small`, and the
-  remaining lifetime as a 2 px bar on the bottom edge.
+### Capsule row
 
-## 8. Iconography
+- **Identity capsule**: the mark (mode light), the project name (bold; click opens
+  the project picker) and the explorer toggle.
+- **Tab well**: one glass capsule holding every document, centered when it fits
+  and scrolling when it does not. The active tab sits on a lens that glides
+  between tabs and resizes as it travels. Inactive tabs are muted with their
+  file-type hue at 55 %. An unsaved document shows an accent light that the close
+  plate replaces under the pointer.
+- **Work capsule** (only while something runs): a sync glyph in the accent and a
+  sentence.
+- **Caption plates**: minimize, maximize/restore, close as round glass plates; close
+  turns coral under the pointer.
 
-Glyphs come from the bundled Nerd Font, so there are no image assets, icon fonts or
-new dependencies. Every glyph is named in `icons.rs` and verified present in
-`assets/fonts/AgaveNerdFontMono-Regular.ttf`. Never write a codepoint literal at a
-call site.
+### Explorer pane
 
-- **Chrome actions and states** use Codicons: close, minimize, maximize and restore,
-  sidebar, chevrons, folder, file, error, warning, info, hint, check, zap, search,
-  server, sync, history, edit, terminal, package, signature and dot.
-- **File types** use Seti glyphs through `icons::file(name) -> (glyph, Option<Hue>)`.
-  Unknown types fall back to a neutral glyph in `secondary`. Inactive tabs show
-  their hue at 70% opacity.
-- **Completion kinds** use symbol glyphs through `icons::completion_kind(n)`,
-  colored by `theme.completion_kind(n)`.
-- Icons accompany words; they do not replace them. Folder chevrons and command
-  chevrons are `muted`. Icons that report state take that state's semantic color.
-- Before adding a glyph, verify it is in the font (for example with fontTools'
-  `getBestCmap()`), add a named constant, and document its meaning there.
+A `FILES` section label with the entry count, then rows: chevron (faint), file-type
+glyph, name. Directories are `secondary`, files `muted`. The open file is a lens
+with a light in the current mode color; keyboard focus moves the lens. The right
+edge of the pane resizes it.
 
-## 9. Interaction and focus states
+### Editor pane
+
+- **Gutter**: numbers in `faint` at `code − 2`; the current line number is bold in
+  the mode color; diagnostics put a round severity mark in the gutter margin.
+- **Current line**: a faint (`active_line`, 3.5 % ink) rounded band across the
+  text column, inset from the pane edges.
+- **Indent guides**: hairlines at each indentation level (detected indent unit);
+  blank lines continue the shallower neighbour; the guide enclosing the cursor's
+  block is brighter (ink 16 %).
+- **Selection**: `selection` with 3 px radius. **Search**: gold tints, the current
+  match filled and outlined. Matches keep their syntax colors.
+- **Overview rail**: a 5 px track on the right edge with a lens thumb for the
+  visible span, plus 2 px ticks for search matches (gold) and diagnostics
+  (severity; errors win a shared pixel row). Inputs are capped and ticks are
+  deduplicated per pixel row.
+- **No end-of-buffer markers**: glass below the last line stays clean.
+- **Footer instrument**: mode chip (light + bold label), file glyph, directory
+  (muted) and name (ink), `modified` with an accent light, then feedback
+  (secondary; errors coral with a glyph). On the right: search position, the server
+  glyph and diagnostic counts when language intelligence is attached, and `Ln`/`Col`
+  with figures in ink.
+
+### Floating instruments
+
+- **Command lens**: Command mode rises as a pill of glass near the top of the
+  editor pane (Glide entrance). A chip shows `:` (or the search glyph for `/`) in
+  the Command light; the input is shaped like code, so the caret travels from the
+  text up into the lens. Hints on the right.
+- **Pickers hang from the lens**: file, grep, buffer and symbol results appear
+  directly beneath the command lens at its width, so query and results read as one
+  instrument. Pickers opened without the lens (the palette) drop from the same
+  place. A light scrim dims the editor; outside clicks dismiss.
+- **Contextual floats** (completion, documentation, hover, signature,
+  diagnostics) sit at the caret with a notch naming their source, fit their
+  content, and never animate.
+- **Help HUD**: `F1`'s key hints as a glass strip at the foot of the editor pane.
+- **Notice capsule**: the missing-language-tools notice floats at the foot of the
+  editor pane with `Manage…` and `Dismiss`.
+- **Toasts**: glass cards inside the editor pane's top-right corner: a lit glyph
+  plate in the category color, bold title, UTC time, close plate, message, and a
+  glowing lifetime bar.
+
+### Modals
+
+- **Dialog**: modal glass over a scrim: heading with the decision glyph, a subject
+  line, an explanation, optional details, a divider, then key hints and pill
+  buttons. The existing default and order are kept; arrows move the focus ring.
+- **Language Server Manager**: modal glass with the mark and a bold title, scope and
+  trust badges, a glowing search well, the filter as a pill well with a lens,
+  maintenance plates, a catalog/details split and a shortcut strip.
+
+### Welcome
+
+An untouched, unnamed, empty document shows the wordmark (`display`, bold) with
+the version chip, a one-line tagline, a `BEGIN` list of actions with their keys,
+and the project path. It takes no input: typing or clicking simply begins.
+
+## 10. Interaction states
 
 | State | Treatment |
 |---|---|
-| Hover | `hover` fill; text brightens to `text`. Never on the selected row. |
-| Pressed or active control | `pressed` fill |
-| Selected list item | `popup_selection` fill, `text` color |
-| Keyboard focus (buttons, dialog choices) | 1 px `accent` ring |
-| Disabled | `muted` text, faint outline, no hover, pointer or listener |
-| Active document | Translucent tab fill and mode-colored underline; open file highlighted in the explorer |
-| Unsaved | `accent` dot on the tab, "modified" in the status bar |
-| Focus region | The explorer's project label turns `accent` while the explorer has keyboard focus |
-| Working | `sync` glyph with muted text in the status bar or manager progress row |
-| Loading or empty | Muted glyph and a sentence ("Indexing project…", "No files to show", "Nothing to show yet.") |
-| Error | `error` glyph and text; detailed errors stay in their owning panel |
+| Hover | `hover` tint; text brightens one ink level. Never on the lens. |
+| Pressed | `pressed` tint |
+| Selected | Lens (gradient, lit rim, contact shadow), `text` ink |
+| Keyboard focus | 1 px `accent` ring with a soft accent glow |
+| Disabled | `faint` text, hairline outline, no plate, pointer or listener |
+| Active document | Tab lens; explorer lens with the mode light |
+| Unsaved | Accent light on the tab and footer, the word `modified` |
+| Working | Work capsule with the sync glyph and a sentence; no spinners |
+| Loading / empty | A muted glyph and a sentence |
+| Error | Coral glyph and text; details stay in their owning panel |
 
-Clicks on a float stop at the float. Clicks outside a non-modal popup dismiss it.
-Modals block all input beneath them. Keyboard routing is unchanged by styling: popup
-policy is in `popup::route`, and the view owns focus.
+Clicks on a float stop at the float; outside clicks dismiss non-modal popups;
+modals block input beneath them. Styling never changes keyboard routing
+(`popup::route` and the view own it).
 
-## 10. Motion
+## 11. Comfort and accessibility
 
-Motion is reserved for two things, both owned by dedicated entities so they never
-rebuild the editor:
+- Contrast is enforced by the bake's clamp, not by asking users to pick a dark
+  wallpaper. Ink is always opaque.
+- Text scales with `font_size`; chrome never drops below 10 px.
+- Every state has a glyph or a word; every action has a keyboard path, shown.
+- Reduced motion is honored everywhere motion exists.
+- No idle animation, no flashing, no moving backgrounds: long sessions stay calm.
+- Known gaps: no tooltips on icon-only plates, no screen-reader bridge in GPUI
+  0.2.2; IME, DPI and high-contrast behavior need manual checks.
 
-- **Cursor.** It uses a four-corner, time-based simulation (`cursor.rs` and
-  `cursor_view.rs`) configured by the `cursor.*` settings. Logical edits always come
-  first; animation is presentation only.
-- **Toasts.** A 180 ms entrance slide and fade and a 220 ms exit, with lifetime
-  progress drawn as an edge bar. One owned timer runs at about 60 Hz only while
-  something moves, and stops otherwise.
+## 12. Cost model
 
-`cursor.reduced_motion = true` removes the toast slide and fade (lifetime progress
-remains, at about 30 Hz) and reduces cursor animation according to the cursor
-settings. Hover, selection, popups, dialogs and panels appear and disappear
-immediately. New interfaces must not add transitions, spinners, pulsing or idle
-timers. To show that work is in progress, use the static `sync` glyph and words.
+Lucent spends GPU and memory deliberately, and nothing at rest.
 
-## 11. Accessibility
+- **Per frame**: the world image, one textured quad per pane, a handful of shadows
+  and quads for rims, sheens and lights. The stage is cached and re-renders only
+  when it changes (mode light, sidebar width, resize, bake completion).
+- **Per keystroke**: unchanged editor work plus indent-guide scanning of visible
+  rows and a bounded rail pass (≤ 2048 search ranges, ≤ 1024 diagnostics).
+- **Memory**: one baked texture per pane at device resolution (about 3–4 MiB for
+  a 1260 × 750 pane at 100 % scale; capped at 4096 px per side), the decoded
+  wallpaper, a reduced float copy of the world (≈ 1.5 MiB frosted), or a 6 MiB
+  atmosphere. Replaced textures are released from the atlas.
+- **Background work**: one decode per wallpaper change; one bake per pane per
+  settled geometry or theme change.
+- **Frames**: springs request frames only while active; reduced motion requests
+  none. Deferred stage updates are sent only when their value changes.
 
-- Text sizes scale with the user's `font_size`, and chrome never drops below 10 px.
-- Text opacity is independent of surface opacity: text is always drawn at full
-  alpha, even on translucent surfaces.
-- State never depends on color alone (see principle 5). Severity, outcome and mode
-  always have a glyph or a word.
-- Every action has a keyboard path, and panels show it. Dialogs keep the existing
-  default choice, and a destructive choice is never `Primary`.
-- Glass at 0.92 keeps floating text legible over arbitrary wallpapers. Contrast over
-  the plane still depends on the user's image and `background.overlay_opacity`.
-- Reduced motion is honored as described above.
-- Known gaps: there are no tooltips on icon-only controls, no screen-reader bridge
-  in GPUI 0.2.2, and IME, DPI and high-contrast behavior need manual checks.
+## 13. Extending Lucent
 
-## 12. Building new interfaces
+Checklist for any new surface:
 
-Checklist:
+1. **Choose the material first.** Is it a pane, floating glass, modal glass, a
+   capsule, a well, a lens or a plate? The material decides fill, edge, light,
+   radius, shadow and motion.
+2. **Compose from `design::`**; add a component (with a `///` contract and a row
+   in §8) rather than restyling raw `div()`s.
+3. **Roles and tokens only.** No hex values; no ad-hoc sizes where a token exists.
+4. **Write every state** (§10), including empty and loading.
+5. **Show the keys.**
+6. **Light it from above**, and only once.
+7. **Stay still and bounded.** Request frames only while a spring is active; keep
+   heavy work off the UI thread; use `uniform_list` for long collections.
+8. **Check** Lucent Dark, Muted and Light, Cyberdream, Rosé Pine Moon; frosted,
+   clear and solid glass; a bright photo wallpaper, the user's wallpaper and the
+   atmosphere; 14 px and 22 px code; maximized and windowed.
 
-1. **Pick the layer first.** Is the new surface docked, floating or modal? That
-   decides its fill, edge, radius and shadow. Do not invent a fifth layer.
-2. **Compose from `design::`.** Use `glass`, `row`, `button` with an explicit `Tone`,
-   `badge`, `hints`, `section` and `heading`. If you need a new building block, add
-   it to `design.rs` with a `///` contract and a row in section 7.
-3. **Use roles and tokens only.** No hex values and no ad-hoc pixel values where a
-   `space`, `radius` or `Scale` step exists.
-4. **Write every state.** Default, hover, selected, focused, disabled, loading,
-   empty and error.
-5. **Show the keys.** Add a `hints` footer or keycaps.
-6. **Check all themes**: Dark, Light and Rosé Pine Moon, with and without
-   transparency and wallpaper, at 14 px and 22 px code sizes.
-7. **Stay still and bounded.** No timers, no per-frame shaping, no unbounded lists:
-   use `uniform_list` for long collections.
+### How planned features fit
 
-### Guidance for planned features
-
-These notes say how upcoming milestones should fit the system. They describe
-intended mappings, not implemented features.
-
-- **Editor splits.** Each pane is its own plane with its own gutter and is divided
-  from its neighbours by a `hairline`. Only the focused pane shows the mode-colored
-  current line number and cursor line band; unfocused panes use `gutter` numbers.
-  Tabs belong to the focused pane group.
-- **Integrated terminal panel.** A docked layer below the plane, separated by a
-  hairline, with code-size text, a header row at `Scale::row()` and a `terminal`
-  glyph. It is not glass.
-- **Session restoration and recent projects.** These use the picker pattern, with
-  the folder or history glyph and `display_path` meta; startup offers use the dialog
-  pattern.
-- **Advanced explorer operations.** Inline rename and new file use the search-field
-  treatment as an input row. Destructive operations use the dialog with a `Danger`
-  button and a non-destructive default.
-- **Project-wide find and replace.** Use the picker anatomy with results grouped
-  under `section` file headers, matched text in `matched` and replacements previewed
-  with `success` and `error` tints at 12% or less.
-- **Folding and inlay hints.** Fold chevrons are `muted` gutter glyphs. Inlay hints
-  are `muted`, at `small` size, on a `hover` pill, and are never brighter than code.
-- **Git diff views and hunks.** Gutter bars 3 px wide in `success`, `warning` and
-  `error` for added, changed and removed lines. Line backgrounds are tints at 12% or
-  less. Hunk actions are `Ghost` buttons.
-- **Configurable keybindings.** Render bindings with `keycap`. A keybinding editor
-  is a manager-style modal.
-
-## 13. Where things live
-
-| Concern | File |
-|---|---|
-| Tokens, scale, elevation, components | `src/gui/design.rs` |
-| Glyph names, file-type and kind mappings | `src/gui/icons.rs` |
-| Semantic roles, hues, mode colors | `src/gui/theme.rs` (palettes in `src/palette.rs`) |
-| Appearance settings and defaults | `src/appearance.rs` |
-| Shell: title row, tabs, explorer, status and command bars | `EditorView` shell section in `src/gui/view.rs` |
-| Popups, pickers, dialogs | `popup_row`, `popups` and `confirmation_dialog` in `src/gui/view.rs`; placement in `src/gui/popup.rs`; float frame and text styling in `src/gui/floating.rs` |
-| Language Server Manager | `src/gui/manager_view.rs` |
-| Toasts | `src/gui/toast_view.rs` (lifetimes in `toast.rs`) |
-| Cursor | `src/gui/cursor.rs`, `src/gui/cursor_view.rs` |
-| Wallpaper | `src/gui/wallpaper.rs` |
+- **Editor splits**: each split is its own pane. Extend `Shell` to return the
+  editor area as a list of pane bounds and give the stage one material slot per
+  pane; the gap between splits is world. `Stage::set_layout` already lights only
+  the focused pane's rim; extend it to a focused index. Unfocused panes keep
+  `faint` numbers and no current-line band. Tabs belong to the focused pane; the tab well can show one
+  well per pane group or follow focus.
+- **Integrated terminal**: a pane beneath the editor pane (same material, its
+  own footer strip), toggled by a capsule in the top row. Terminal text uses the
+  code size and ink roles; its cursor uses the same caret light.
+- **Git**: hunks are 3 px gutter bars (`success`, `warning`, `error`) and rail
+  ticks of the same colors; line tints stay ≤ 12 %. A status and history view is a
+  pane or a manager-style modal with a segmented well; branch state belongs in the
+  identity capsule.
+- **Project management**: recent projects and sessions use the picker hanging from
+  the lens; the welcome grows a `RECENT` section using rows and keycaps.
+- **Settings UI**: a manager-style modal: section labels, pill segmented wells for
+  enumerations, plates for actions; changes apply live (the stage rebakes
+  asynchronously).
+- **Inlay hints and folding**: inlay hints are `muted`, `small`, on a `hover` pill,
+  never brighter than code; fold chevrons are `faint` gutter glyphs.
+- **Configurable keybindings**: rendered with `keycap`; editing them is a
+  manager-style modal.

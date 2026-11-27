@@ -5,7 +5,7 @@ use filavim::{
     config::Config,
     editor::{Mode, Request},
     gui::{
-        FONT_BYTES, FONT_FAMILY,
+        FONT_BOLD_BYTES, FONT_BYTES, FONT_FAMILY,
         io::{self, Job},
         model::Model,
         viewport::VisibleLine,
@@ -39,6 +39,30 @@ fn bundled_agave_is_the_exact_mono_variant_and_has_nerd_glyphs() {
     }
     let a = f.glyph_hor_advance(f.glyph_index('i').unwrap());
     assert_eq!(a, f.glyph_hor_advance(f.glyph_index('W').unwrap()));
+    // The bold face is the same family, heavier, and on the same monospace grid,
+    // so bold labels and computed tab widths stay column-aligned.
+    let b = ttf_parser::Face::parse(FONT_BOLD_BYTES, 0).unwrap();
+    let bold_names: Vec<_> = b
+        .names()
+        .into_iter()
+        .filter_map(|n| n.to_string())
+        .collect();
+    assert!(
+        bold_names.iter().any(|s| s == FONT_FAMILY),
+        "{bold_names:?}"
+    );
+    assert!(b.is_bold() && b.is_monospaced() && !f.is_bold());
+    assert!(b.weight().to_number() > f.weight().to_number());
+    let grid = |face: &ttf_parser::Face| {
+        f32::from(
+            face.glyph_hor_advance(face.glyph_index('m').unwrap())
+                .unwrap(),
+        ) / f32::from(face.units_per_em())
+    };
+    assert_eq!(grid(&f), grid(&b));
+    for c in ['A', '\u{e0b0}', '\u{f07b}'] {
+        assert!(b.glyph_index(c).is_some(), "bold missing {c}");
+    }
 }
 #[test]
 fn gpui_keys_use_existing_modes_leader_and_undo() {

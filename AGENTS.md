@@ -16,7 +16,8 @@ declarations to determine whether a source file is active in this frontend.
 - `src/buffer.rs`, `editor.rs`, `input.rs`, `pairs.rs`: authoritative text/history,
   modal actions, keymaps and user-typing pairing; do not duplicate these in GPUI.
 - `src/gui/model.rs`, `documents.rs`: per-document input/IME state and tab ownership.
-- `src/gui/view.rs`: input routing, commands, effect dispatch, viewport/layout glue.
+- `src/gui/view.rs`: input routing, commands, effect dispatch, viewport paint glue;
+  `shell_view.rs` (its child) composes the Lucent shell and implements `Render`.
 - `src/gui/services.rs`, `completion.rs`: syntax/LSP orchestration and completion sessions.
 - `src/gui/toast.rs`, `toast_view.rs`: notification lifetimes and independent native
   overlay. Keep application notices separate from Editor's command-feedback channel.
@@ -24,11 +25,13 @@ declarations to determine whether a source file is active in this frontend.
 - `src/gui/viewport.rs`, `cursor*.rs`, `popup.rs`, `floating.rs`: coordinate mapping,
   cursor presentation, headless popup policy and native chrome.
 - `src/gui/explorer.rs`, `navigation.rs`, `gui/io.rs`, `files.rs`: project/file work.
-- `src/config.rs`, `appearance.rs`, `palette.rs`, `gui/theme.rs`, `gui/wallpaper.rs`:
-  settings, semantic colors and cached imagery; font assets/licenses are in `assets/`.
-- `src/gui/design.rs`, `icons.rs`: design tokens, type scale, elevation, shared
-  components and glyphs. Read [DESIGN.md](DESIGN.md) before building or restyling UI;
-  compose from these components and theme roles instead of ad-hoc styling.
+- `src/config.rs`, `appearance.rs`, `palette.rs`, `gui/theme.rs`: settings and
+  semantic colors; font assets/licenses are in `assets/`.
+- `src/gui/stage.rs`, `frost.rs`, `wallpaper.rs`: the world behind the panes, baked
+  frosted pane materials and the mode light (a cached root sibling beneath the editor).
+- `src/gui/design.rs`, `motion.rs`, `icons.rs`: tokens, type scale, shell geometry,
+  materials, components, springs and glyphs. Read [DESIGN.md](DESIGN.md) before
+  building or restyling UI; compose from these and theme roles, never ad-hoc styling.
 - `tests/`, `src/gui/integration_tests.rs`, `scripts/test.ps1`: regression workflows.
   [docs/TESTING.md](docs/TESTING.md) describes exact commands, coverage and reporting limits.
 - Historical terminal sources remain in `src/`; they are not the native entry path.

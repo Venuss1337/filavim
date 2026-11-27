@@ -33,7 +33,17 @@ flowchart TD
     IO --> View
     App --> Cursor[CursorView: independent visual frames]
     View --> Cursor
+    App --> Stage[Stage: world, pane materials, mode light]
+    View --> Stage
+    Stage --> Bakes[Background executor: decode, frost bakes]
 ```
+
+The root (`application.rs`, `NativeWindow`) stacks three siblings: the cached
+`Stage` beneath, the cached `EditorView`, and `CursorView` above (plus toasts).
+Stage and cursor frames never rebuild editor layout. The editor sends the stage
+the explorer width and focus (`set_layout`) and the mode color (`set_mode`) with
+deferred updates, only when they change: a notification raised during the
+editor's own draw would be dropped by the cached stage.
 
 ## Ownership and source map
 
@@ -43,13 +53,13 @@ flowchart TD
 | Editing authority | [buffer.rs](../src/buffer.rs) owns Rope, cursor, journal and undo snapshots. [editor.rs](../src/editor.rs) owns modal state, selection, commands and pairing. |
 | Input | [gui/input.rs](../src/gui/input.rs) translates GPUI keys; [input.rs](../src/input.rs) resolves semantic `Action`s. [gui/model.rs](../src/gui/model.rs) handles committed text and IME ranges around one real Editor. |
 | Multiple documents | [gui/documents.rs](../src/gui/documents.rs) owns the active Model and inactive Models. Switching moves them; text/history is not rebuilt. Document IDs, paths and tab order are distinct identities. |
-| UI coordination | [gui/view.rs](../src/gui/view.rs), `EditorView`: routes focus/keys/commands, dispatches effects, owns service/explorer adapters and visible-row cache. `manager_view.rs` is its child module via `#[path]`. |
+| UI coordination | [gui/view.rs](../src/gui/view.rs), `EditorView`: routes focus/keys/commands, dispatches effects, owns service/explorer adapters and visible-row cache. Child modules via `#[path]`: `shell_view.rs` (Lucent shell: capsule row, panes, footer, command lens, welcome and the `Render` impl) and `manager_view.rs`. |
 | Viewport/shaping | [gui/viewport.rs](../src/gui/viewport.rs), `VisibleLine`: clipped display strings and scalar/byte mapping. `EditorView::prepare` shapes visible rows and reuses compatible cached rows; `paint` draws geometry/decorations. |
-| Cursor | [gui/cursor.rs](../src/gui/cursor.rs) is time-based four-corner simulation; [cursor_view.rs](../src/gui/cursor_view.rs) owns GPUI scheduling/clipping. The root caches editor content separately from cursor frames. No particles. |
+| Cursor | [gui/cursor.rs](../src/gui/cursor.rs) is time-based four-corner simulation; [cursor_view.rs](../src/gui/cursor_view.rs) owns GPUI scheduling/clipping and draws the caret in the mode color with a bloom. The root caches editor content separately from cursor frames. No particles. |
 | Language services | [gui/services.rs](../src/gui/services.rs), `Services`: document sync, server selection/runtime instances, pending requests, syntax snapshots, diagnostics and popup state. `update`, `poll`, `request`, `accept` are the main integration points. |
 | Completion | [gui/completion.rs](../src/gui/completion.rs), `Session`/`Source`: context lifetime, provider snapshots, matching and edit rebasing. [completion_context.rs](../src/gui/completion_context.rs) provides conservative local TypeScript type keywords. |
-| Popup policy/chrome | [gui/popup.rs](../src/gui/popup.rs): headless placement and input routing. [floating.rs](../src/gui/floating.rs): float frame plus documentation/signature text styling. The view owns focus, keyboard/mouse dispatch and popup rendering. |
-| Design system | [gui/design.rs](../src/gui/design.rs): spacing, radii, type `Scale`, glass elevation and stateless components (button, row, badge, keycap/hints, heading, notch). [gui/icons.rs](../src/gui/icons.rs): named Nerd Font glyphs. Components never own state or listeners; [DESIGN.md](../DESIGN.md) is the visual contract. |
+| Popup policy/chrome | [gui/popup.rs](../src/gui/popup.rs): headless placement and input routing. [floating.rs](../src/gui/floating.rs): float frame plus documentation/signature text styling. The view owns focus, keyboard/mouse dispatch and popup rendering; it re-anchors `Picker` panels beneath the command lens (`lens_frame`). |
+| Design system | [gui/design.rs](../src/gui/design.rs): tokens, type `Scale`, `Shell` geometry (shared by stage and view), materials (glass, capsule, well, lens, rim, sheen) and stateless components. [gui/motion.rs](../src/gui/motion.rs): springs with Quick/Glide/Settle characters on a monotonic clock. [gui/icons.rs](../src/gui/icons.rs): named Nerd Font glyphs. Components never own state or listeners; [DESIGN.md](../DESIGN.md) is the visual contract. |
 | Notifications | [gui/toast.rs](../src/gui/toast.rs): controlled-time, bounded lifetime/stack model. [toast_view.rs](../src/gui/toast_view.rs): native translucent overlay, independent entity and single owned animation timer. Services queues application notices; command feedback remains in Editor. |
 | LSP transport | [lsp.rs](../src/lsp.rs), `Client`: process threads, framed JSON-RPC, initialization, synchronization, cancellation, events and shutdown. It never mutates editor state. |
 | LSP installation | [lsp_catalog.rs](../src/lsp_catalog.rs) defines curated packages; [lsp_manager.rs](../src/lsp_manager.rs) owns receipts/preferences/resolution and asynchronous tool operations. `gui/manager_view.rs` renders their real state. Installation and runtime status are separate. |
@@ -58,7 +68,7 @@ flowchart TD
 | Explorer/project search | [gui/explorer.rs](../src/gui/explorer.rs) owns native tree state and indexing/projection workers. [navigation.rs](../src/navigation.rs) implements ignore-aware indexing, fuzzy ranking, regex grep, rows and bounded previews. |
 | Git/utilities | [git.rs](../src/git.rs) provides subprocess jobs/results. Native commands in `EditorView` dispatch supported operations and present rows through Services; transport/installation does not own this UI. |
 | Settings/appearance | [config.rs](../src/config.rs): validated native/core settings. [appearance.rs](../src/appearance.rs): theme/background options and persistence; [palette.rs](../src/palette.rs): RGB palettes; [gui/theme.rs](../src/gui/theme.rs): resolved semantic GPUI colors. |
-| Wallpaper/font | [gui/wallpaper.rs](../src/gui/wallpaper.rs) bounds decoding off-thread and retains a reusable GPUI image with stale-load protection. Embedded Agave constants are in `gui/mod.rs`; provenance/notices are in [assets/fonts](../assets/fonts/README.md). |
+| World/material/font | [gui/stage.rs](../src/gui/stage.rs), `Stage`: the world (wallpaper or procedural atmosphere), pane shadows, materials, rims and the settling mode light, with generation-checked async loads and keyed, debounced pane bakes whose replaced images leave the atlas. [gui/frost.rs](../src/gui/frost.rs): pure CPU bakes (world reduction/blur, crop, tint, legibility clamp, grain, atmosphere). [gui/wallpaper.rs](../src/gui/wallpaper.rs): bounded decoding. Embedded Agave Regular and Bold are in `gui/mod.rs`; provenance/notices are in [assets/fonts](../assets/fonts/README.md). |
 | Shared worker primitives | [background.rs](../src/background.rs): replaceable/keyed jobs, cooperative cancellation and wakes. [queue.rs](../src/queue.rs): nonblocking producers plus approximate queue-volume/age metrics; not a capacity-limited queue. |
 
 ## Input, coordinates and rendering
@@ -200,8 +210,8 @@ Defaults are success/info/warning/error = 3/4/5/7 seconds, after a 180 ms entran
 background work. Services has a bounded queue drained by EditorView; do not call
 GPUI entities directly from process threads. `EditorView::toast` is the native helper.
 
-Toasts are deferred above editor/popups in the top-right, below the custom title
-row, and do not reserve editor layout or request keyboard focus. Cards use the
+Toasts are deferred above editor/popups inside the editor pane's top-right corner,
+below the capsule row, and do not reserve editor layout or request keyboard focus. Cards use the
 shared floating glass (`design::glass`, `theme.surfaces.popup_opacity`) so code
 beneath never competes with the message. Shared strings
 are retained; the overlay does not notify/rebuild the editor on lifetime frames.

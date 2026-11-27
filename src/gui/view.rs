@@ -119,7 +119,7 @@ pub struct EditorView {
     /// Last explorer width and mode color sent to the stage. The stage is a
     /// cached sibling, so updates are deferred out of this view's draw (a
     /// notification raised mid-frame would be dropped) and sent only on change.
-    stage_sidebar: Option<Option<f32>>,
+    stage_layout: Option<(Option<f32>, bool)>,
     stage_mode: Option<Hsla>,
     bounds: Option<Bounds<Pixels>>,
     cell: Pixels,
@@ -249,7 +249,7 @@ impl EditorView {
             tab_lens_ready: false,
             command_presence: super::motion::Motion::new(0., super::motion::Character::Glide),
             lens_frame: None,
-            stage_sidebar: None,
+            stage_layout: None,
             stage_mode: None,
             focus,
             bounds: None,

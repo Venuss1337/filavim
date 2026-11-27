@@ -12,7 +12,7 @@
 //!   the editor pane, both settling toward the current mode color.
 //!
 //! Geometry comes from [`design::Shell`], the same function the editor uses; the
-//! editor reports the explorer width with [`Stage::set_sidebar`]. Bakes are keyed
+//! editor reports the explorer layout and focus with [`Stage::set_layout`]. Bakes are keyed
 //! by everything that affects their pixels, debounced during live resize,
 //! generation-checked on completion, and replaced images leave the sprite atlas.
 //! A settled stage schedules no frames.
@@ -55,6 +55,8 @@ pub struct Stage {
     scale: Scale,
     reduced_motion: bool,
     sidebar: Option<f32>,
+    /// The explorer pane holds keyboard focus; its rim carries the mode light.
+    explorer_focused: bool,
     scenery: Option<Scenery>,
     load: Option<Task<()>>,
     generation: u64,
@@ -78,6 +80,7 @@ impl Stage {
             scale: Scale::new(config.font_size),
             reduced_motion: config.cursor.reduced_motion,
             sidebar: None,
+            explorer_focused: false,
             scenery: None,
             load: None,
             generation: 0,
@@ -132,10 +135,17 @@ impl Stage {
         self.light.to(1., now, self.reduced_motion);
         cx.notify();
     }
-    /// The explorer pane's requested width, or `None` while it is hidden.
-    pub fn set_sidebar(&mut self, width: Option<f32>, cx: &mut Context<Self>) {
-        if self.sidebar != width {
+    /// The explorer pane's requested width (`None` while hidden) and whether it
+    /// holds keyboard focus. Only the focused pane's rim carries the mode light.
+    pub fn set_layout(
+        &mut self,
+        width: Option<f32>,
+        explorer_focused: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.sidebar != width || self.explorer_focused != explorer_focused {
             self.sidebar = width;
+            self.explorer_focused = explorer_focused;
             cx.notify();
         }
     }
@@ -322,8 +332,13 @@ impl Render for Stage {
         } else {
             vec![1]
         };
+        let focused = if self.explorer_focused && panes.len() == 2 {
+            0
+        } else {
+            panes.len() - 1
+        };
         if theme.glass != Glass::Solid
-            && let Some((world_atmosphere, _)) = self.scenery.as_ref().map(|s| (s.atmosphere, ()))
+            && let Some(world_atmosphere) = self.scenery.as_ref().map(|s| s.atmosphere)
         {
             for (bounds, slot) in panes.iter().zip(&slots) {
                 let params = Bake {
@@ -406,7 +421,7 @@ impl Render for Stage {
                         spread_radius: px(0.),
                     }],
                 );
-                for (pane, image) in panes.iter().zip(&baked) {
+                for (index, (pane, image)) in panes.iter().zip(&baked).enumerate() {
                     let pane = *pane;
                     // Lift: a broad ambient shadow and a tight contact shadow.
                     window.paint_shadows(
@@ -466,11 +481,16 @@ impl Render for Stage {
                     window.paint_quad(
                         outline(pane, theme.edge, BorderStyle::Solid).corner_radii(corners(radius)),
                     );
-                    let rim = mix(
-                        theme.rim,
-                        light.opacity(theme.rim.a.max(0.5)),
-                        if theme.light { 0.25 } else { 0.45 },
-                    );
+                    // Focus is light: only the focused pane's rim takes the mode.
+                    let rim = if index == focused {
+                        mix(
+                            theme.rim,
+                            light.opacity(theme.rim.a.max(0.5)),
+                            if theme.light { 0.25 } else { 0.45 },
+                        )
+                    } else {
+                        theme.rim.opacity(theme.rim.a * 0.7)
+                    };
                     window.paint_quad(PaintQuad {
                         bounds: pane,
                         corner_radii: corners(radius),

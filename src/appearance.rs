@@ -135,7 +135,9 @@ mod tests {
         std::fs::write(&path, "font_size=22\n[cursor]\nsmear=false\n").unwrap();
         crate::setup::save_setting(&path, "theme.name", "cyberdream").unwrap();
         crate::setup::save_setting(&path, "background.image", "C:/art/a b.webp").unwrap();
+        crate::setup::save_setting(&path, "theme.glass", "solid").unwrap();
         let c = crate::setup::save_setting(&path, "theme.surfaces.popup_opacity", "0.96").unwrap();
+        assert_eq!(c.appearance.glass, Glass::Solid);
         assert_eq!(c.font_size, 22.);
         assert!(!c.cursor.smear);
         assert_eq!(c.appearance.surfaces.popup_opacity, 0.96);

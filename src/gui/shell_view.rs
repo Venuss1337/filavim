@@ -1006,10 +1006,13 @@ impl Render for EditorView {
             requested,
         );
         // The stage paints the pane materials from the same geometry.
-        if self.stage_sidebar != Some(requested) {
-            self.stage_sidebar = Some(requested);
+        let layout = (requested, self.explorer.visible && self.explorer.focused);
+        if self.stage_layout != Some(layout) {
+            self.stage_layout = Some(layout);
             let stage = self.stage.clone();
-            cx.defer(move |cx| stage.update(cx, |stage, cx| stage.set_sidebar(requested, cx)));
+            cx.defer(move |cx| {
+                stage.update(cx, |stage, cx| stage.set_layout(layout.0, layout.1, cx))
+            });
         }
         let slab = shell.slab;
         let pre = cx.entity();

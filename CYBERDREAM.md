@@ -1,236 +1,130 @@
-# Cyberdream native theme and wallpaper
+# Themes, glass and wallpaper
 
-## Sources and licensing
+FilaVim's visual system is **Lucent**, described in [DESIGN.md](DESIGN.md). This
+guide covers the user-facing settings: palettes, glass qualities and the world
+image (wallpaper or the procedural atmosphere), plus their lifecycle and limits.
 
-Palette and highlight roles follow [Cyberdream](https://github.com/scottmckendry/cyberdream.nvim):
-`lua/cyberdream/colors.lua` (current filename; `colours.lua` is absent),
-`extensions/base.lua`, `treesitter.lua`, `blinkcmp.lua`, `cmp.lua`, `telescope.lua`,
-and `util.lua`. Upstream's MIT notice is retained in
-`assets/licenses/cyberdream-MIT.txt` (Scott McKendry).
+## Palettes and sources
 
-No reference screenshots were attached in this session. No wallpaper was identified,
-licensed, downloaded, or bundled as Cyberdream artwork. The application accepts a
-user-supplied local file. A synthetic checker image was used only as an ignored local
-verification fixture.
+- **Lucent** (default): FilaVim's own palette, Dark, Muted and Light variants,
+  defined in `src/palette.rs`. Pastel, evenly bright syntax hues on luminous glass.
+- **Cyberdream**: roles follow
+  [Cyberdream](https://github.com/scottmckendry/cyberdream.nvim)
+  (`lua/cyberdream/colors.lua`, `extensions/base.lua`, `treesitter.lua`,
+  `blinkcmp.lua`, `cmp.lua`, `telescope.lua`, `util.lua`). Upstream's MIT notice is
+  retained in `assets/licenses/cyberdream-MIT.txt` (Scott McKendry). Dark, Muted and
+  Light variants.
+- **Rosé Pine Moon**: the official 15-color palette; legacy `[theme]` Moon color
+  overrides remain readable.
+
+Every palette gets the same Lucent materials, composition and light: glass tints,
+rims and shadows are derived from each palette's own background colors. No
+wallpaper artwork is bundled; the application accepts a user-supplied local file,
+and draws a procedural atmosphere when none is configured.
 
 ## Configuration
 
-Cyberdream Dark is the default for an unset theme. Existing explicit
-`theme_name = "rose-pine-moon"` and legacy `[theme]` Moon palette overrides remain
-readable. A new `theme.name` takes precedence over the legacy selector.
-
-The existing configuration file is `%APPDATA%/filavim-gpui/config.toml` on Windows,
-or the existing `FILAVIM_GPUI_CONFIG` override. No new settings UI is required.
+The configuration file is `%APPDATA%/filavim-gpui/config.toml` on Windows, or the
+`FILAVIM_GPUI_CONFIG` override. `theme.name` takes precedence over the legacy
+`theme_name` selector.
 
 ```toml
 [theme]
-name = "cyberdream"          # cyberdream | rose-pine-moon
-variant = "dark"            # dark | muted | light (Cyberdream)
-transparent = true          # composited backgrounds inside an opaque window
-saturation = 1.0            # 0..1, upstream-style HSL desaturation
+name = "lucent"             # lucent | cyberdream | rose-pine-moon
+variant = "dark"            # dark | muted | light
+glass = "frosted"           # frosted | clear | solid
+transparent = true          # false: solid glass and a plain world
+saturation = 1.0            # 0..1, HSL desaturation of palette colors
 italic_comments = false
 
 [theme.surfaces]
-editor_opacity = 0.0        # theme-colored tint over the wallpaper
-popup_opacity = 0.92        # smoked-glass floating surfaces; text stays opaque
-sidebar_opacity = 0.0       # wallpaper continues through the explorer
+popup_opacity = 0.92        # floating glass; text stays opaque
+editor_opacity = 0.0        # minimum pane glass density (0..1)
+sidebar_opacity = 0.0       # same; the larger of the two applies
 
 [background]
-enabled = true
-image = "C:/Pictures/wallpaper.webp"
-fit = "cover"              # cover | contain | stretch
-opacity = 1.0
-    # Themed readability overlay: dark for Dark/Muted, light for Light.
-overlay_opacity = 0.45
+enabled = true              # false: no world image, plain night
+image = "C:/Pictures/wallpaper.webp"   # unset: procedural atmosphere
+fit = "cover"               # cover | contain | stretch
+opacity = 1.0               # image over the night color
+overlay_opacity = 0.15      # tint over the whole world
 ```
 
 All opacity/saturation values must be finite and within 0..1. Invalid enum values,
-unknown options and malformed values fail validation before the configuration is
-written. Text opacity is independent and remains fully opaque. For bright or busy
-artwork, increase `background.overlay_opacity` and/or `theme.surfaces.editor_opacity`.
-Contrast depends on the supplied artwork; the default tint cannot guarantee contrast
-for every possible image.
+unknown options and malformed values fail validation before anything is written.
+Text is always fully opaque.
 
-Examples using the existing command bar:
+Glass qualities:
+
+- **frosted** (default): panes show the world blurred, tinted and grained.
+- **clear**: panes show the sharp world under a slightly denser tint.
+- **solid**: panes are opaque gradients; the world shows only around them.
+
+Contrast does not depend on the artwork: the frosted/clear bake clamps luminance
+under glass (dark glass caps brightness, light glass lifts darkness) while keeping
+the world's hue. `overlay_opacity` only shapes how vivid the world is around the
+panes. Floating glass stays near-opaque at the default `popup_opacity`.
+
+Examples using the command lens:
 
 ```text
-:set theme.name=cyberdream
-:set theme.variant=muted
+:set theme.name=lucent
 :set theme.variant=light
-:set theme.name=rose-pine-moon
+:set theme.glass=clear
+:set theme.name=cyberdream
 :set background.image=C:/Pictures/wallpaper.png
 :set background.fit=contain
-:set background.overlay_opacity=0.7
-:set theme.surfaces.popup_opacity=0.92
+:set background.overlay_opacity=0.3
 :set background.enabled=false
 :BackgroundReload
 ```
 
 Relative image paths resolve against the configuration directory, independently of
-project changes. `:BackgroundReload` explicitly re-reads the same file after an external
-image edit. There is no filesystem polling or image watching during ordinary editing.
-Theme and background settings update live without restarting language servers.
-In transparent mode the title/tabs row, status line and command line share the root
-wallpaper and readability overlay, rather than using nearly opaque panel fills.
-The active tab retains a translucent selection tint. Popup opacity stays independent.
-
-## Floating surfaces (Night Glass)
-
-The visual system is documented in [DESIGN.md](DESIGN.md). In summary: contextual
-completion, hover, signature help and documentation are minimal *smoked-glass*
-floats (default `popup_opacity` 0.92, 1px outline, 6px radius, soft shadow) with a
-small *signal notch* on the top edge: ⚡ completion, ⓘ documentation/hover, ƒ
-signature, ⚠ diagnostics. They size to their content and have no header or footer.
-Centered pickers and information panels add a titled header, a count and a keycap
-footer over a light scrim. Selected rows use a 50% theme-highlight tint in every
-mode. The earlier 0.30 default let code show through popups; an explicitly saved
-lower opacity is still honored. No desktop transparency, blur or chrome animation.
-
-Signature labels and function-like documentation headers receive lightweight syntax
-colors; the active signature parameter is cyan and bold, with validated UTF-8 spans.
-Prose gets line-level structure (headings, rules, bullets, inline/fenced code) so
-server markup markers are not shown verbatim; this is not a Markdown engine.
-Completion and signature help retain separate presentation when both are available.
-The secondary signature uses free space opposite the completion menu and stays hidden
-when there is insufficient non-overlapping space. Existing revision validation applies.
-
-Docked chrome is separated by hairlines, not fills. The explorer's resize handle
-shows an accent tint on hover or drag. The mode appears as a tinted badge (`NORMAL`,
-`INSERT`, `VISUAL`, `COMMAND` and auxiliary labels) whose color also drives the
-active tab underline and the current line number. Visual Line/Block and Replace are
-not existing backend modes.
-
-Refinement verification: `cargo fmt`, `cargo check --locked`, three targeted signature/
-placement/coexistence tests and the existing palette/mode-color test passed. The
-Windows release build passed. No live GUI or screenshot matching was performed for
-this refinement; no reference screenshot was attached in the accessible conversation.
-
-## Architecture and mappings
-
-- `src/palette.rs`: authoritative typed Cyberdream Dark, Muted and Light palettes;
-  existing 15-color Moon palette retained. Upstream neutral blends are computed here.
-- `src/appearance.rs`: frontend-independent typed theme names/variants, surface
-  settings, image settings and fitting modes; validation/persistence regression tests.
-- `src/config.rs`: backward-compatible parsing of new theme options alongside legacy
-  Moon overrides and the existing selector/configuration format.
-- `src/gui/theme.rs`: resolves semantic colors once per settings change. Rendering uses
-  editor, text, sidebar, surface, popup, border, selection, cursor, gutter, search,
-  diagnostic, completion-match/kind and syntax roles rather than hex literals.
-- `src/gui/wallpaper.rs`: owned asynchronous decode task, generation validation,
-  reusable `Arc<RenderImage>`, explicit GPU-image retirement and clean failure fallback.
-- `src/gui/view.rs`: one cached wallpaper entity beneath existing editor/chrome/popups;
-  live settings integration, popup labels, search foregrounds, optional comment italics,
-  and a readable command-line surface. Existing popup IDs, scroll handles and completion
-  sessions are preserved.
-- `src/gui/completion.rs` / `services.rs`: expose the current session query and produce
-  bounded UTF-8-safe visible-label highlights; signature help emphasizes the active
-  parameter in cyan, converting LSP UTF-16 label offsets to validated UTF-8 ranges.
-  Provider/request behavior is unchanged.
-- `src/syntax.rs`: extends existing Tree-sitter node classification with booleans,
-  operators, statements, preprocessor constructs, parameters and properties. Existing
-  incremental parsing, edit projection, cancellation and viewport shaping are retained.
-- `Cargo.toml` / `Cargo.lock`: reference the same `image` 0.25.10 already linked by GPUI;
-  PNG/JPEG/WebP support adds no separate image framework or GPU renderer.
-
-Exact default RGB palettes come from upstream. Strings are green, functions blue,
-types purple, keywords orange, statements magenta, operators purple, constants pink,
-numbers orange, booleans/preprocessors cyan, comments grey and identifiers white in
-Dark. Tree-sitter properties and parameters follow upstream Identifier/foreground
-links, rather than inventing extra colors. Syntax classification falls back to the
-foreground when the existing engine has no more specific token.
-
-Diagnostics use red/yellow/blue/cyan. Cursor and insertion cursor use the foreground,
-matching upstream Cursor/ICursor. Normal floats use the base palette background,
-cyan titles and neutral borders; completion/documentation uses upstream's blended
-Blink border, cyan matches and Blink category colors. Selection uses `bg_highlight`;
-active tabs, the cursor line and list selection use translucent `bg_highlight`.
-Search matches keep their syntax colors under a cyan tint; the current match is
-filled more strongly and outlined, so navigation never reshapes text.
-
-Native adaptations: background alpha values are local compositor settings; current
-line fill is subdued with alpha, the active line number takes the mode color, and
-native sidebar/chrome become transparent in transparent mode, sharing
-the full-window tint. Opaque mode retains secondary palette surfaces. Neovim highlight
-inheritance is mapped into Filavim's existing token categories rather than porting Lua.
-The existing client has no LSP semantic-token rendering pipeline; this task does not
-claim one. Existing grammars remain Rust/Python/JavaScript/JSON; no TypeScript grammar
-or unrelated language subsystem was added.
+project changes. `:BackgroundReload` re-reads the same file after an external edit.
+There is no filesystem polling or image watching. Theme and background settings
+apply live without restarting language servers.
 
 ## Image lifecycle and performance
 
-Layer order is opaque window/base -> one full-window cached image -> readability
-overlay/editor tint -> existing viewport/gutter/chrome -> deferred floating UI ->
-existing cursor layer. The image does not scroll with document content. GPUI's
-ObjectFit implements centered Cover/Contain/Stretch, clipping and DPI-aware drawing.
-Neither the OS window nor all its child text is made transparent.
+Layer order: night color → world image (fitted, static) → world tint → pane
+shadows → pane materials (baked frosted textures or gradients) → rims and sheens
+→ editor content → floating glass → caret. The world never scrolls with content.
 
-Only an enabled/path change or explicit reload starts decoding. Fit, opacity, theme
-changes and keystrokes reuse the same image ID and GPU cache. File reading, format
-inspection, decoding and RGBA-to-BGRA conversion run on GPUI's background executor.
-A superseded task cannot publish over a newer generation. Animated containers are
-rendered as a single static frame, so wallpaper does not schedule idle animation.
+The stage (`src/gui/stage.rs`) is a cached root view beneath the editor. Only an
+enabled/path/glass/transparency change or `:BackgroundReload` reloads the world.
+Decoding, the reduced world copy (480 px blurred for frosted glass, 1280 px sharp
+for clear glass) and every pane bake run on GPUI's background executor; a
+superseded result cannot publish over a newer generation. Pane bakes are keyed by
+geometry, scale and theme, debounced 90 ms during live resize, and replaced
+textures are released from the sprite atlas. Animated containers render a single
+static frame. Nothing here runs during typing or at rest.
 
-Limits: regular local file, at most 64 MiB compressed, 32 megapixels, 16,384 pixels
-per dimension, and a 128 MiB decoder allocation limit (the image library documents
-allocation limits as best-effort; dimension limits are strict). Missing, corrupt,
-unsupported and oversized files fall back to the palette base and emit an actionable
-message. No network image loading, blur, processing during typing, or new permanent
-worker is introduced.
+Decode limits: a regular local file, at most 64 MiB compressed, 32 megapixels,
+16,384 pixels per dimension and a 128 MiB decoder allocation limit (best-effort in
+the image library; dimension limits are strict). Missing, corrupt, unsupported
+and oversized files fall back to the plain world and raise an error toast. Bakes
+are capped at 4096 device pixels per side. See DESIGN.md §12 for the memory model.
 
-GPU uploads are cached by image ID; no per-keystroke decode or texture upload is
-requested. GPUI may still sample the cached wallpaper when compositing a changed
-frame. No damage-only redraw, GPU timing, idle-CPU or memory-improvement claim is made.
-Theme changes invalidate only existing viewport shapes, not document contents or syntax
-trees. Image/opacity changes are infrequent settings operations.
+## Mappings and native adaptations
 
-## Validation
-
-- `cargo check --offline` and subsequent `cargo check --locked`: passed.
-- `cargo fmt --check`: passed.
-- `cargo clippy --locked --all-targets --features perf -- -D warnings`: passed.
-- `cargo test --locked --lib --test editor --test native --test checkpoint2 --test floating --test lsp_manager`:
-  **95 passed**, seven explicitly ignored benchmark/real-server tests. Includes
-  settings persistence, all three image formats, corrupt/missing/oversized image
-  rejection, BGRA channel order, cached image identity, fitting geometry, official
-  colors, alpha isolation, legacy settings, editing/save/IME/cursor/LSP regressions.
-- New Unicode completion-match byte-range assertion: passed in a targeted rerun.
-- Targeted signature-help test: passed for string parameter labels, UTF-16 ranges
-  after emoji, invalid surrogate boundaries and out-of-range labels.
-- `cargo build --locked` and `cargo build --release --locked`: passed using the
-  existing local GPUI FXC toolchain. Final command-line surface and active signature
-  parameter adjustments are included in the final release rebuild.
-
-Native visual check: the debug build launched into a real Windows GPUI window.
-Cyberdream Dark without wallpaper and the full-window synthetic wallpaper were
-observed. The wallpaper was continuous across the editor and gutter. The bright
-fixture exposed weak command-line contrast. The initial themed chrome fix was later
-replaced by shared full-window tinting to keep the wallpaper visible across all
-chrome. Increase the global overlay for bright artwork. The follow-up transparency
-correction passed its targeted theme test and release build, but has not been visually
-rechecked. Cursor geometry and timings were not changed.
-
-Further UI activity was stopped after user activity/minimization interrupted the check.
-The temporary wallpaper preference was restored byte-for-byte from the original
-configuration, with a comparison preventing overwrite of unrelated preference changes.
-Floating completion/docs, other variants, artwork contrast, resize/maximize and
-multi-monitor DPI still require manual visual checks. Headless fitting/color tests
-are not substitutes for those checks. No reference-screenshot fidelity is claimed.
+`src/gui/theme.rs` resolves semantic roles once per settings change: four ink
+levels, the signal (`accent`), mode lights, severities, materials and syntax
+tokens. Rendering never uses hex literals. Search matches keep their syntax colors
+under a tint; the current match is filled more strongly and outlined, so navigation
+never reshapes text. Signature help emphasizes the active parameter, converting LSP
+UTF-16 label offsets to validated UTF-8 ranges. Existing Tree-sitter classification
+(booleans, operators, statements, preprocessor constructs, parameters, properties)
+is unchanged; there is no LSP semantic-token pipeline.
 
 ## Manual checks
 
-From the repository root, launch `.\target\release\filavim.exe`.
-
-1. Open a Rust file using Ctrl+O. Verify strings/functions/types/booleans/comments and
-   that Normal/Insert/Visual editing, save and undo/redo work as before.
-2. Set `background.image` to your PNG/JPEG/WebP and adjust the overlay. Scroll the
-   file; artwork should remain stationary and continuous through the gutter.
-3. Switch `background.fit` between cover/contain/stretch. Resize/maximize; expect
-   centered crop, letterboxing or stretching respectively, with no image re-decoding.
-4. Type a prefix with an active LSP or press Ctrl+Space. Verify persistent completion,
-   cyan matches, category-colored kind labels, selection and the documentation panel.
-5. Open `:Hover`, `:Diagnostics` and `:LspManager`. Check borders, readable popup
-   surfaces and consistent severities. Escape should retain existing behavior.
-6. Switch `theme.variant` through light/muted/dark, then select rose-pine-moon and back.
-   Verify no editor or LSP restart, settings persist, and cursor smear stays intact.
-7. Point at a missing or corrupt file. Expect a message and solid theme fallback;
-   editing must remain responsive. Disable background to restore the plain theme.
+1. Open a Rust or TypeScript file. Check syntax roles, Normal/Insert/Visual/Command
+   mode lights (mark, caret, line number, chip, rim tint), save and undo/redo.
+2. Set `background.image` to a bright photo. Code and comments must stay legible
+   through frosted and clear glass; the world stays vivid around the panes.
+3. Switch `background.fit` between cover/contain/stretch; resize and maximize. The
+   pane material re-bakes once after the resize settles.
+4. Switch `theme.variant` through dark/muted/light, `theme.glass` through
+   frosted/clear/solid, and the palette to cyberdream and rose-pine-moon and back.
+5. Point at a missing or corrupt image: expect an error toast and a plain world;
+   editing stays responsive. Unset the image to see the atmosphere.

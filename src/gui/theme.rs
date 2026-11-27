@@ -357,13 +357,20 @@ impl Theme {
         // world, so it can be thinner than clear glass for the same legibility.
         // The bake's legibility clamp guarantees contrast over bright worlds,
         // so baked glass can stay thin enough for the world's hue to come through.
-        let (top_alpha, bottom_alpha) = match (glass, light) {
+        let (top_alpha, bottom_alpha): (f32, f32) = match (glass, light) {
             (Glass::Frosted, false) => (0.42, 0.66),
             (Glass::Clear, false) => (0.62, 0.80),
             (Glass::Frosted, true) => (0.55, 0.74),
             (Glass::Clear, true) => (0.70, 0.84),
             (Glass::Solid, _) => (1., 1.),
         };
+        // Legacy surface opacities set a floor on pane density, so a user who
+        // asked for denser surfaces over their wallpaper still gets them.
+        let floor = options
+            .surfaces
+            .editor_opacity
+            .max(options.surfaces.sidebar_opacity);
+        let (top_alpha, bottom_alpha) = (top_alpha.max(floor), bottom_alpha.max(floor));
         let float = options.surfaces.popup_opacity;
         let syntax = s.syntax.map(color);
         let mut t = Self {
@@ -508,6 +515,8 @@ mod tests {
         assert_eq!(solid.glass, Glass::Solid);
         assert_eq!((solid.glass_top.a, solid.glass_bottom.a), (1., 1.));
         assert_eq!(solid.world_tint.a, 0.);
+        let dense = Theme::new(&Config::parse("[theme.surfaces]\neditor_opacity=0.9").unwrap());
+        assert_eq!((dense.glass_top.a, dense.glass_bottom.a), (0.9, 0.9));
         let clear = Theme::new(&Config::parse("[theme]\nglass='clear'").unwrap());
         let frosted = Theme::new(&Config::default());
         assert!(clear.glass_top.a > frosted.glass_top.a);

@@ -49,7 +49,7 @@ pub fn decode(path: &Path) -> anyhow::Result<Arc<RenderImage>> {
         .decode()
         .context("Cannot decode wallpaper")?
         .into_rgba8();
-    for pixel in rgba.chunks_exact_mut(4) {
+    for pixel in rgba.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
     Ok(Arc::new(RenderImage::new(vec![image::Frame::new(rgba)])))

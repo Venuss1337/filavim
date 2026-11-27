@@ -455,31 +455,39 @@ impl Render for Stage {
                             .corner_radii(corners(radius)),
                         ),
                     }
+                    // The slim status pane is unlit: a lit edge on a pill that
+                    // thin reads as a flash, so it keeps only its outline.
+                    let lit = *slot != Shell::STATUS;
                     // Sheen inside the top edge, then the outline and the lit rim.
                     // The rim takes some of the mode light, so the instrument
                     // answers a mode change at the edge of vision.
-                    window.paint_quad(
-                        fill(
-                            Bounds::new(
-                                pane.origin,
-                                gpui::size(pane.size.width, px(56f32.min(radius * 2.))),
-                            ),
-                            linear_gradient(
-                                180.,
-                                linear_color_stop(theme.sheen, 0.),
-                                linear_color_stop(theme.sheen.opacity(0.), 1.),
-                            ),
-                        )
-                        .corner_radii(Corners {
-                            top_left: px(radius),
-                            top_right: px(radius),
-                            bottom_left: px(0.),
-                            bottom_right: px(0.),
-                        }),
-                    );
+                    if lit {
+                        window.paint_quad(
+                            fill(
+                                Bounds::new(
+                                    pane.origin,
+                                    gpui::size(pane.size.width, px(56f32.min(radius * 2.))),
+                                ),
+                                linear_gradient(
+                                    180.,
+                                    linear_color_stop(theme.sheen, 0.),
+                                    linear_color_stop(theme.sheen.opacity(0.), 1.),
+                                ),
+                            )
+                            .corner_radii(Corners {
+                                top_left: px(radius),
+                                top_right: px(radius),
+                                bottom_left: px(0.),
+                                bottom_right: px(0.),
+                            }),
+                        );
+                    }
                     window.paint_quad(
                         outline(pane, theme.edge, BorderStyle::Solid).corner_radii(corners(radius)),
                     );
+                    if !lit {
+                        continue;
+                    }
                     // Focus is light: only the focused pane's rim takes the mode.
                     let rim = if *slot == focused {
                         mix(

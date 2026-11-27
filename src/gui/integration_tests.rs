@@ -653,13 +653,22 @@ fn workspace_finish(view: &Entity<EditorView>, cx: &mut VisualTestContext) {
     });
     cx.run_until_parked();
 }
+
+fn workspace_fixture() -> (tempfile::TempDir, PathBuf) {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("main.rs");
+    std::fs::write(&path, "abc").unwrap();
+    // Editor open jobs canonicalize the path before putting it in the document.
+    // The headless fixture constructs the document directly, so do the same here.
+    let path = crate::files::resolve_path(&path).unwrap();
+    (temp, path)
+}
+
 #[gpui::test]
 fn gpui_workspace_annotation_rejection_and_expansion_preserve_selection_and_focus(
     cx: &mut TestAppContext,
 ) {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("main.rs");
-    std::fs::write(&path, "abc").unwrap();
+    let (temp, path) = workspace_fixture();
     let (view, cx) = fixture(cx, "abc", path.to_str());
     view.update(cx, |v, _| {
         v.model.editor.buffer.cursor = 1;
@@ -669,6 +678,7 @@ fn gpui_workspace_annotation_rejection_and_expansion_preserve_selection_and_focu
     let value = serde_json::json!({"documentChanges":[{"textDocument":{"uri":crate::lsp::uri(&path).unwrap(),"version":0},"edits":[{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}},"newText":"X","annotationId":"reason"}]}],"changeAnnotations":{"reason":{"label":"Rename field","description":"Public API change","needsConfirmation":true}}});
     workspace_stage(&view, cx, temp.path(), value);
     view.read_with(cx, |v, _| {
+        assert!(v.confirmation.is_some(), "{}", v.model.editor.message);
         assert!(matches!(
             v.confirmation.as_ref().unwrap().decision,
             Decision::Workspace {
@@ -702,10 +712,8 @@ fn gpui_workspace_annotation_rejection_and_expansion_preserve_selection_and_focu
 }
 #[gpui::test]
 fn gpui_workspace_approve_rename_blocks_input_and_save_until_reconciled(cx: &mut TestAppContext) {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("main.rs");
-    let renamed = temp.path().join("renamed.rs");
-    std::fs::write(&path, "abc").unwrap();
+    let (temp, path) = workspace_fixture();
+    let renamed = path.with_file_name("renamed.rs");
     let (view, cx) = fixture(cx, "abc", path.to_str());
     view.update(cx, |v, _| {
         v.model.editor.buffer.disk_state = Some(crate::files::disk_state(&path).unwrap());
@@ -731,7 +739,12 @@ fn gpui_workspace_approve_rename_blocks_input_and_save_until_reconciled(cx: &mut
     view.read_with(cx, |v, _| {
         assert_eq!(v.model.editor.buffer.text, "abc");
         assert_eq!(v.model.editor.buffer.cursor, 2);
-        assert_eq!(v.model.find(&renamed), Some(v.model.id()));
+        assert_eq!(
+            v.model.find(&renamed),
+            Some(v.model.id()),
+            "{}",
+            v.model.editor.message
+        );
         assert!(!v.services.workspace_active());
     });
     assert!(!path.exists());
@@ -742,9 +755,7 @@ fn gpui_workspace_approve_rename_blocks_input_and_save_until_reconciled(cx: &mut
 fn gpui_workspace_disk_change_during_annotation_approval_rejects_execution(
     cx: &mut TestAppContext,
 ) {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("main.rs");
-    std::fs::write(&path, "abc").unwrap();
+    let (temp, path) = workspace_fixture();
     let (view, cx) = fixture(cx, "abc", path.to_str());
     let value = serde_json::json!({"documentChanges":[{"textDocument":{"uri":crate::lsp::uri(&path).unwrap(),"version":0},"edits":[{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}},"newText":"X","annotationId":"a"}]}],"changeAnnotations":{"a":{"label":"Sensitive change","needsConfirmation":true}}});
     workspace_stage(&view, cx, temp.path(), value);
@@ -755,6 +766,10 @@ fn gpui_workspace_disk_change_during_annotation_approval_rejects_execution(
     view.read_with(cx, |v, _| {
         assert_eq!(v.model.editor.buffer.text, "abc");
         assert!(!v.services.workspace_active());
-        assert!(v.model.editor.message.contains("Filesystem changed"));
+        assert!(
+            v.model.editor.message.contains("Filesystem changed"),
+            "{}",
+            v.model.editor.message
+        );
     });
 }

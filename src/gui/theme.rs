@@ -8,9 +8,32 @@ use crate::{
     syntax::Token,
 };
 use gpui::{Hsla, rgb};
+/// Categorical palette hues for identity colors (file types, completion kinds).
+/// Never use a hue to communicate state; state uses the semantic roles below.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hue {
+    Blue,
+    Green,
+    Cyan,
+    Yellow,
+    Magenta,
+    Orange,
+    Purple,
+}
 /// Resolved once on settings changes; the renderer uses semantic roles only.
+///
+/// Interaction tints (`hover`, `pressed`) are derived from the foreground so they
+/// read the same over opaque surfaces and translucent wallpaper. `hairline`
+/// separates docked chrome; `scrim` and `shadow` belong to elevated layers only.
 #[derive(Clone, Copy)]
 pub struct Theme {
+    pub hover: Hsla,
+    pub pressed: Hsla,
+    pub hairline: Hsla,
+    pub scrim: Hsla,
+    pub shadow: Hsla,
+    pub light: bool,
+    hues: [Hsla; 7],
     pub base: Hsla,
     pub surface: Hsla,
     pub chrome: Hsla,
@@ -37,7 +60,6 @@ pub struct Theme {
     pub matched: Hsla,
     pub punctuation: Hsla,
     pub search: Hsla,
-    pub search_text: Hsla,
     pub italic_comments: bool,
     string: Hsla,
     number: Hsla,
@@ -78,6 +100,9 @@ impl Theme {
             Token::Parameter | Token::Property => self.text,
         }
     }
+    pub fn hue(&self, hue: Hue) -> Hsla {
+        self.hues[hue as usize]
+    }
     pub fn completion_kind(&self, kind: usize) -> Hsla {
         self.kinds.get(kind).copied().unwrap_or(self.secondary)
     }
@@ -101,14 +126,32 @@ impl Theme {
             name == crate::appearance::ThemeName::Cyberdream
         });
         let p = Cyber::variant(options.variant);
+        // Derived interaction roles are filled in below, once text/base are known.
+        let unset = Hsla::default();
         let mut t = if cyber {
             Self {
+                hover: unset,
+                pressed: unset,
+                hairline: unset,
+                scrim: unset,
+                shadow: unset,
+                light: options.variant == crate::appearance::Variant::Light,
+                hues: [
+                    color(p.blue),
+                    color(p.green),
+                    color(p.cyan),
+                    color(p.yellow),
+                    color(p.magenta),
+                    color(p.orange),
+                    color(p.purple),
+                ],
                 base: color(p.bg),
                 surface: color(p.bg_alt),
                 chrome: color(p.bg_alt),
                 active_tab: color(p.bg_highlight),
                 sidebar: color(p.bg_alt),
-                overlay: color(p.bg),
+                // Floating layers sit one step above the editor plane.
+                overlay: color(p.bg_alt),
                 editor: color(p.bg),
                 muted: color(p.grey),
                 text: color(p.fg),
@@ -128,8 +171,7 @@ impl Theme {
                 cursor: color(p.fg),
                 matched: color(p.cyan),
                 punctuation: color(p.fg),
-                search: color(p.fg),
-                search_text: color(p.bg_alt),
+                search: color(p.cyan),
                 italic_comments: options.italic_comments,
                 string: color(p.green),
                 number: color(p.orange),
@@ -151,6 +193,21 @@ impl Theme {
             }
         } else {
             Self {
+                hover: unset,
+                pressed: unset,
+                hairline: unset,
+                scrim: unset,
+                shadow: unset,
+                light: false,
+                hues: [
+                    moon(Moon::Pine),
+                    moon(Moon::Foam),
+                    moon(Moon::Foam),
+                    moon(Moon::Gold),
+                    moon(Moon::Iris),
+                    moon(Moon::Gold),
+                    moon(Moon::Iris),
+                ],
                 base: moon(Moon::Base),
                 surface: moon(Moon::Surface),
                 chrome: moon(Moon::Surface),
@@ -176,8 +233,7 @@ impl Theme {
                 cursor: moon(Moon::Text),
                 matched: moon(Moon::Foam),
                 punctuation: moon(Moon::Subtle),
-                search: moon(Moon::HighlightMed),
-                search_text: moon(Moon::Text),
+                search: moon(Moon::Foam),
                 italic_comments: options.italic_comments,
                 string: moon(Moon::Gold),
                 number: moon(Moon::Rose),
@@ -229,17 +285,24 @@ impl Theme {
                 t.kinds[kind] = color(value);
             }
         }
+        t.hover = t.text.opacity(if t.light { 0.07 } else { 0.06 });
+        t.pressed = t.text.opacity(if t.light { 0.12 } else { 0.10 });
+        t.hairline = t.border.opacity(if t.light { 0.9 } else { 0.7 });
+        t.scrim = t.base.opacity(if t.light { 0.45 } else { 0.55 });
+        t.shadow = gpui::black().opacity(if t.light { 0.16 } else { 0.45 });
+        // State fills are translucent in every mode, so the cursor line, active
+        // tab and list selection read the same over opaque or wallpaper surfaces.
+        t.active_tab = t.active_tab.opacity(0.45);
+        t.popup_selection = t.popup_selection.opacity(0.5);
+        t.active_line = t.active_line.opacity(0.35);
         if options.transparent {
             // The root wallpaper already supplies the shared readability tint.
             t.chrome = t.chrome.opacity(0.);
-            t.active_tab = t.active_tab.opacity(0.45);
             t.editor = t.base.opacity(options.surfaces.editor_opacity);
             t.overlay = t.overlay.opacity(options.surfaces.popup_opacity);
-            t.popup_selection = t.popup_selection.opacity(0.35);
             t.sidebar = t.sidebar.opacity(options.surfaces.sidebar_opacity);
             // Keep large chrome quieter, but never fade its text or children.
             t.surface = t.surface.opacity(options.surfaces.popup_opacity);
-            t.active_line = t.active_line.opacity(0.35);
         }
         t
     }
@@ -285,8 +348,11 @@ mod tests {
         assert_eq!(t.chrome.a, 0.);
         assert_eq!(t.sidebar.a, 0.);
         assert_eq!(t.active_tab.a, 0.45);
-        assert_eq!(t.overlay.a, 0.30);
-        assert_eq!(t.popup_selection.a, 0.35);
+        assert_eq!(t.overlay.a, 0.92);
+        assert_eq!(hex(t.overlay), Cyber::DARK.bg_alt);
+        assert_eq!(hex(t.hue(Hue::Orange)), Cyber::DARK.orange);
+        assert!(t.hover.a < 0.1 && t.scrim.a > 0.4 && !t.light);
+        assert_eq!(t.popup_selection.a, 0.5);
         for (mode, expected) in [
             (crate::editor::Mode::Normal, Cyber::DARK.blue),
             (crate::editor::Mode::Insert, Cyber::DARK.green),
@@ -300,11 +366,13 @@ mod tests {
                 Config::parse(&format!("[theme]\nvariant='{variant}'\ntransparent=false")).unwrap();
             let t = Theme::new(&config);
             assert_eq!(hex(t.base), expected.bg);
+            assert_eq!(t.light, variant == "light");
             assert_eq!(hex(t.token(Token::String)), expected.green);
             assert_eq!(t.editor.a, 1.);
             assert_eq!(t.chrome.a, 1.);
-            assert_eq!(t.active_tab.a, 1.);
+            // Opaque surfaces stay opaque; state fills remain translucent tints.
             assert_eq!(t.overlay.a, 1.);
+            assert_eq!((t.active_tab.a, t.active_line.a), (0.45, 0.35));
         }
         let t = Theme::new(&Config::parse("[theme]\nname='rose-pine-moon'").unwrap());
         assert_eq!(hex(t.base), Moon::Base.rgb());

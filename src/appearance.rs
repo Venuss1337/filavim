@@ -26,7 +26,9 @@ impl Default for Surfaces {
     fn default() -> Self {
         Self {
             editor_opacity: 0.,
-            popup_opacity: 0.30,
+            // Floating layers cover code; at lower alpha the text beneath competes
+            // with their content. Docked chrome stays fully see-through.
+            popup_opacity: 0.92,
             sidebar_opacity: 0.,
         }
     }

@@ -1,39 +1,26 @@
-//! Shared native floating chrome; content and input remain owned by the editor.
-use super::{FONT_FAMILY, theme::Theme};
+//! Floating content helpers (documentation and signature text) plus the shared
+//! frame used by every contextual or centered popup. Content and input remain
+//! owned by the editor; surface styling comes from [`super::design`].
+use super::{
+    design::{self, Elevation},
+    theme::Theme,
+};
 use gpui::{prelude::*, *};
 use std::ops::Range;
 
+/// A floating glass surface that occludes the editor and swallows its clicks.
 pub fn frame(theme: Theme, id: &'static str, font_size: f32) -> Stateful<Div> {
-    div()
-        .id(id)
-        .relative()
-        .flex()
-        .flex_col()
-        .font_family(FONT_FAMILY)
-        .text_size(px(font_size))
-        .text_color(theme.text)
-        .bg(theme.overlay)
-        .border_1()
-        .border_color(theme.popup_border.opacity(0.55))
-        .occlude()
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-}
-pub fn indicator(theme: Theme, icon: &'static str) -> Div {
-    div()
-        .absolute()
-        .left(px(5.))
-        .top(px(-7.))
-        .h(px(14.))
-        .line_height(px(14.))
-        .text_size(px(12.))
-        .text_color(if icon == "⚡" {
-            theme.warning
-        } else if icon == "!" {
-            theme.error
-        } else {
-            theme.matched
-        })
-        .child(if icon == "⚡" { "⚡\u{fe0e}" } else { icon })
+    design::typeface(
+        design::glass(&theme, Elevation::Floating),
+        &theme,
+        font_size,
+    )
+    .id(id)
+    .relative()
+    .flex()
+    .flex_col()
+    .occlude()
+    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
 }
 
 pub fn documentation(text: String, theme: Theme) -> StyledText {

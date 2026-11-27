@@ -5,7 +5,11 @@
 //! [`services`] validates asynchronous results. Rendering-only modules require
 //! `native`; the remaining adapters do not depend on a running GPUI application.
 #[cfg(feature = "native")]
+mod design;
+#[cfg(feature = "native")]
 mod floating;
+#[cfg(feature = "native")]
+mod icons;
 #[cfg(feature = "native")]
 pub mod input;
 pub mod io;

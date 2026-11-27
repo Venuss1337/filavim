@@ -11,7 +11,14 @@ mod integration_tests;
 mod manager_ui;
 #[path = "search_refresh.rs"]
 mod search_refresh;
-use super::{FONT_FAMILY, input, io, model::Model, theme::Theme, viewport::VisibleLine};
+use super::{
+    FONT_FAMILY,
+    design::{self, Tone, space},
+    icons, input, io,
+    model::Model,
+    theme::Theme,
+    viewport::VisibleLine,
+};
 use crate::{
     editor::{Mode, Request},
     input::Action,
@@ -48,7 +55,6 @@ struct Row {
     source: VisibleLine,
     shape: ShapedLine,
     number: ShapedLine,
-    active_number: ShapedLine,
     origin: Point<Pixels>,
     search: Vec<(usize, usize)>,
 }
@@ -63,6 +69,14 @@ struct Cache {
     lines: Vec<Row>,
     end_marker: ShapedLine,
     search: String,
+}
+/// The cursor row's number, tinted with the mode color. Shaped once per row/mode
+/// change instead of shaping a second number for every visible row.
+struct ActiveNumber {
+    row: usize,
+    color: Hsla,
+    font_size: f32,
+    line: ShapedLine,
 }
 struct CommandLine {
     line: ShapedLine,
@@ -85,6 +99,7 @@ pub struct EditorView {
     cell: Pixels,
     gutter: f32,
     cache: Option<Cache>,
+    active_number: Option<ActiveNumber>,
     command_line: Option<CommandLine>,
     follow_cursor: bool,
     busy: bool,
@@ -206,6 +221,7 @@ impl EditorView {
             cell: px(10.),
             gutter: GUTTER,
             cache: None,
+            active_number: None,
             command_line: None,
             follow_cursor: true,
             busy: false,
@@ -2032,15 +2048,7 @@ impl EditorView {
                 self.close(window, cx);
                 return;
             }
-            "Explorer" => {
-                self.explorer.visible = !self.explorer.visible;
-                if self.explorer.visible && self.explorer.index.is_none() {
-                    self.explorer.open(
-                        self.explorer.root.clone(),
-                        self.model.editor.config.navigation.clone(),
-                    );
-                }
-            }
+            "Explorer" => self.toggle_explorer(),
             "ExplorerFocus" => {
                 if self.explorer.index.is_none() {
                     self.explorer.open(
@@ -2680,7 +2688,7 @@ impl EditorView {
                 } else {
                     Vec::new()
                 };
-                let runs = syntax_runs(&source, &e.buffer, &spans, &search, &self.theme);
+                let runs = syntax_runs(&source, &e.buffer, &spans, &self.theme);
                 let shaped = window.text_system().shape_line(
                     source.text.clone().into(),
                     px(e.config.font_size),
@@ -2693,18 +2701,11 @@ impl EditorView {
                     e.config.font_size - 2.,
                     self.theme.gutter,
                 );
-                let active_number = shape(
-                    window,
-                    &(row + 1).to_string(),
-                    e.config.font_size - 2.,
-                    self.theme.accent,
-                );
                 lines.push(Row {
                     search,
                     source,
                     shape: shaped,
                     number,
-                    active_number,
                     origin: point(px(0.), px(0.)),
                 });
             }
@@ -2733,6 +2734,25 @@ impl EditorView {
         }
         self.bounds = Some(bounds);
         let e = &self.model.editor;
+        let color = self.theme.mode(e.mode);
+        let row = e.buffer.row();
+        if e.config.line_numbers
+            && self.active_number.as_ref().is_none_or(|n| {
+                n.row != row || n.color != color || n.font_size != e.config.font_size
+            })
+        {
+            self.active_number = Some(ActiveNumber {
+                row,
+                color,
+                font_size: e.config.font_size,
+                line: shape(
+                    window,
+                    &(row + 1).to_string(),
+                    e.config.font_size - 2.,
+                    color,
+                ),
+            });
+        }
         // Command input publishes its destination later in this same prepaint.
         if e.mode == Mode::Command {
             return;
@@ -2907,60 +2927,92 @@ impl EditorView {
         request: u64,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
+        use super::services::Choice;
         let panel = self.services.panel.as_ref()?;
         if panel.request != request {
             return None;
         }
         let row = panel.rows.get(i)?;
+        let theme = self.theme;
+        let scale = self.scale();
+        let size = if panel.presentation == super::popup::Presentation::Completion {
+            self.model.editor.config.font_size.min(20.)
+        } else {
+            scale.ui
+        };
+        let file_glyph = |name: &str| {
+            let (glyph, hue) = icons::file(name);
+            (glyph, hue.map_or(theme.secondary, |h| theme.hue(h)))
+        };
+        let mut meta = None;
         let mut highlights = Vec::new();
-        if let super::services::Choice::Completion(value) = &row.choice {
-            let end = row.label.rfind("  · ").unwrap_or(row.label.len());
-            highlights.extend(
-                super::completion::matching_ranges(
-                    &row.label[..end],
-                    self.services.completion_query(),
-                )
-                .into_iter()
-                .map(|range| {
-                    (
-                        range,
-                        HighlightStyle {
-                            color: Some(self.theme.matched),
-                            ..Default::default()
-                        },
+        let (glyph, color, label) = match &row.choice {
+            Choice::Completion(value) => {
+                let end = row.label.rfind("  · ").unwrap_or(row.label.len());
+                let kind = value["kind"].as_u64().unwrap_or(0);
+                highlights.extend(
+                    super::completion::matching_ranges(
+                        &row.label[..end],
+                        self.services.completion_query(),
                     )
-                }),
-            );
-            if end < row.label.len() {
-                highlights.push((
-                    end..row.label.len(),
-                    HighlightStyle {
-                        color: Some(
-                            self.theme
-                                .completion_kind(value["kind"].as_u64().unwrap_or(0) as usize),
-                        ),
-                        ..Default::default()
-                    },
-                ));
+                    .into_iter()
+                    .map(|range| {
+                        (
+                            range,
+                            HighlightStyle {
+                                color: Some(theme.matched),
+                                ..Default::default()
+                            },
+                        )
+                    }),
+                );
+                meta = row.label.get(end + "  · ".len()..).map(str::to_owned);
+                (
+                    icons::completion_kind(kind),
+                    theme.completion_kind(kind as usize),
+                    row.label[..end].to_owned(),
+                )
             }
-        }
-        let label = StyledText::new(row.label.clone()).with_highlights(highlights);
+            Choice::Location { path, .. } => {
+                let (glyph, color) = file_glyph(
+                    &path
+                        .file_name()
+                        .map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
+                );
+                (glyph, color, row.label.clone())
+            }
+            Choice::Buffer(_) => {
+                let name = row.label.trim_end_matches(" [+]");
+                let name = name.rsplit(std::path::is_separator).next().unwrap_or(name);
+                let (glyph, color) = file_glyph(name);
+                (glyph, color, row.label.clone())
+            }
+            Choice::Command(_) => (icons::CHEVRON_RIGHT, theme.muted, row.label.clone()),
+            _ => ("", theme.secondary, row.label.clone()),
+        };
+        let label = StyledText::new(label).with_highlights(highlights);
         Some(
-            div()
-                .id(("popup-row", i))
+            design::row(&theme, ("popup-row", i), i == panel.selected)
                 .h(px(row_height))
-                .px(px(10.))
-                .py(px(3.))
-                .whitespace_nowrap()
-                .text_ellipsis()
-                .overflow_hidden()
-                .bg(if i == panel.selected {
-                    self.theme.popup_selection
-                } else {
-                    self.theme.overlay.opacity(0.)
+                .child(design::icon(glyph, size, color))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .child(label),
+                )
+                .when_some(meta, |d, meta| {
+                    d.child(
+                        div()
+                            .flex_none()
+                            .pl(px(space::MD))
+                            .text_size(px(scale.small))
+                            .text_color(theme.muted)
+                            .child(meta),
+                    )
                 })
-                .cursor_pointer()
-                .child(label)
                 .on_mouse_move(cx.listener(move |v, _, _, cx| {
                     if v.services
                         .panel
@@ -2996,6 +3048,330 @@ impl EditorView {
                 .into_any_element(),
         )
     }
+    /// Modal decision dialog over a scrim. Choices keep their order and indices;
+    /// tone marks the safe default and destructive choices, focus follows keys.
+    fn confirmation_dialog(&self, viewport: Size<Pixels>, cx: &mut Context<Self>) -> AnyElement {
+        let Some(confirm) = &self.confirmation else {
+            return div().into_any_element();
+        };
+        let theme = self.theme;
+        let scale = self.scale();
+        let selected = confirm.selected;
+        let name = self
+            .model
+            .get(confirm.document)
+            .and_then(|e| e.buffer.path.as_ref())
+            .map_or_else(
+                || "Untitled".into(),
+                |p| design::display_path(p, &self.explorer.root),
+            );
+        type Choice = (&'static str, Tone);
+        let (glyph, color, title, detail, choices): (_, _, &str, &str, &[Choice]) = match &confirm
+            .decision
+        {
+            Decision::Workspace { .. } => (
+                icons::EDIT,
+                theme.accent,
+                "Apply workspace edit?",
+                "Approval can change files on disk. Text edits stay unsaved and undoable. Reject or Escape leaves both unchanged.",
+                &[
+                    ("Approve", Tone::Primary),
+                    ("Reject", Tone::Secondary),
+                    ("Cancel", Tone::Secondary),
+                ],
+            ),
+            Decision::Recovery(_) => (
+                icons::HISTORY,
+                theme.info,
+                "Recover unsaved documents?",
+                "Recovery opens local snapshots without overwriting disk. Later keeps the stored copies.",
+                &[
+                    ("Recover", Tone::Primary),
+                    ("Discard", Tone::Danger),
+                    ("Later", Tone::Secondary),
+                ],
+            ),
+            Decision::Close => (
+                icons::WARNING,
+                theme.warning,
+                "Save changes before closing?",
+                "Discard loses unsaved changes. Escape cancels.",
+                &[
+                    ("Save", Tone::Primary),
+                    ("Discard", Tone::Danger),
+                    ("Cancel", Tone::Secondary),
+                ],
+            ),
+            Decision::Conflict {
+                overwrite: false, ..
+            } => (
+                icons::WARNING,
+                theme.warning,
+                "File changed outside FilaVim",
+                "Reload discards editor changes. Keep preserves both versions. Saving a copy leaves the original intact.",
+                &[
+                    ("Reload", Tone::Danger),
+                    ("Keep", Tone::Primary),
+                    ("Save copy", Tone::Secondary),
+                    ("Overwrite…", Tone::Danger),
+                ],
+            ),
+            Decision::Conflict {
+                overwrite: true, ..
+            } => (
+                icons::ERROR,
+                theme.error,
+                "Overwrite external changes?",
+                "This replaces the disk version with your editor contents. Further disk changes will stop the save.",
+                &[("Overwrite", Tone::Danger), ("Cancel", Tone::Secondary)],
+            ),
+        };
+        let subject = match &confirm.decision {
+            Decision::Conflict { path, actual, .. } => {
+                let disk = match actual {
+                    crate::files::DiskState::Missing => "disk file is missing".into(),
+                    crate::files::DiskState::Present { bytes, .. } => {
+                        format!("disk {bytes} bytes")
+                    }
+                };
+                let editor = self
+                    .model
+                    .get(confirm.document)
+                    .map_or(0, |e| e.buffer.text.len_bytes());
+                format!(
+                    "{} · {disk} · editor {editor} bytes",
+                    design::display_path(path, &self.explorer.root)
+                )
+            }
+            Decision::Recovery(entries) => format!(
+                "{} {}: {}",
+                entries.len(),
+                if entries.len() == 1 {
+                    "document"
+                } else {
+                    "documents"
+                },
+                entries
+                    .iter()
+                    .take(4)
+                    .map(|e| e.path.as_ref().map_or_else(
+                        || "Untitled".into(),
+                        |p| design::display_path(p, &self.explorer.root)
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Decision::Workspace { token, .. } => self
+                .services
+                .workspace_approval
+                .as_ref()
+                .filter(|a| a.token == *token)
+                .map_or_else(
+                    || "Expired workspace plan".into(),
+                    |a| {
+                        format!(
+                            "{} ordered changes · {} approval reasons",
+                            a.summaries.len(),
+                            a.reasons.len()
+                        )
+                    },
+                ),
+            Decision::Close => name,
+        };
+        let subject_glyph = match &confirm.decision {
+            Decision::Close | Decision::Conflict { .. } => {
+                icons::file(
+                    subject
+                        .split(" · ")
+                        .next()
+                        .and_then(|p| p.rsplit(std::path::is_separator).next())
+                        .unwrap_or(""),
+                )
+                .0
+            }
+            Decision::Recovery(_) => icons::HISTORY,
+            Decision::Workspace { .. } => icons::FILE,
+        };
+        let expanded = matches!(confirm.decision, Decision::Workspace { expanded: true, .. });
+        let workspace_details: Option<AnyElement> = if let Decision::Workspace {
+            token,
+            position,
+            ..
+        } = confirm.decision
+        {
+            self.services
+                .workspace_approval
+                .as_ref()
+                .filter(|a| a.token == token)
+                .map(|a| {
+                    let entries: std::sync::Arc<Vec<String>> = std::sync::Arc::new(
+                        a.reasons
+                            .iter()
+                            .map(|s| format!("Approval: {s}"))
+                            .chain(a.summaries.iter().cloned())
+                            .collect(),
+                    );
+                    let well = div()
+                        .p(px(space::SM))
+                        .rounded(px(design::radius::CONTROL))
+                        .border_1()
+                        .border_color(theme.hairline)
+                        .bg(theme.hover)
+                        .text_size(px(scale.small));
+                    if expanded {
+                        let selected = entries.get(position).cloned().unwrap_or_default();
+                        let row_height = scale.row();
+                        let list = uniform_list(
+                            "workspace-operations",
+                            entries.len(),
+                            move |range, _, _| {
+                                range
+                                    .map(|i| {
+                                        div()
+                                            .h(px(row_height))
+                                            .px(px(space::SM))
+                                            .flex()
+                                            .items_center()
+                                            .rounded(px(design::radius::CONTROL))
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
+                                            .text_ellipsis()
+                                            .when(i == position, |d| {
+                                                d.bg(theme.popup_selection).text_color(theme.text)
+                                            })
+                                            .child(entries[i].clone())
+                                            .into_any_element()
+                                    })
+                                    .collect()
+                            },
+                        )
+                        .track_scroll(self.workspace_scroll.clone())
+                        .flex_1()
+                        .min_h(px(0.));
+                        well.flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_h(px(0.))
+                            .gap(px(space::SM))
+                            .text_color(theme.secondary)
+                            .child(list)
+                            .child(design::divider(&theme))
+                            .child(
+                                div()
+                                    .id("workspace-operation-details")
+                                    .max_h(px(88.))
+                                    .overflow_y_scroll()
+                                    .text_color(theme.text)
+                                    .child(selected),
+                            )
+                            .into_any_element()
+                    } else {
+                        well.text_color(theme.secondary)
+                            .child(
+                                a.reasons
+                                    .iter()
+                                    .take(3)
+                                    .cloned()
+                                    .collect::<Vec<_>>()
+                                    .join("\n"),
+                            )
+                            .into_any_element()
+                    }
+                })
+        } else {
+            None
+        };
+        let buttons = choices
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(i, (label, tone))| {
+                design::button(
+                    &theme,
+                    scale,
+                    ("confirm-choice", i),
+                    label,
+                    tone,
+                    true,
+                    i == selected,
+                )
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |v, _, _, cx| {
+                        cx.stop_propagation();
+                        v.answer_close(i, cx);
+                    }),
+                )
+                .into_any_element()
+            })
+            .collect::<Vec<_>>();
+        let mut keys: Vec<(&'static str, &'static str)> =
+            vec![("← →", "choose"), ("Enter", "confirm"), ("Esc", "cancel")];
+        if matches!(confirm.decision, Decision::Workspace { .. }) {
+            keys.push((
+                "D",
+                if expanded {
+                    "hide changes"
+                } else {
+                    "show changes"
+                },
+            ));
+        }
+        let width = (f32::from(viewport.width) - space::XXL * 2.).clamp(1., 600.);
+        let height = (f32::from(viewport.height) - space::XXL * 2.).max(1.);
+        let dialog = design::glass(&theme, design::Elevation::Modal)
+            .id("confirmation")
+            .w(px(width))
+            .max_h(px(height))
+            .when(expanded, |d| d.h(px(height.min(480.))))
+            .overflow_hidden()
+            .p(px(space::XL))
+            .flex()
+            .flex_col()
+            .gap(px(space::LG))
+            .text_size(px(scale.ui))
+            .child(design::heading(&theme, scale, glyph, color, title).text_size(px(scale.ui + 1.)))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(space::SM))
+                    .text_size(px(scale.small))
+                    .text_color(theme.secondary)
+                    .child(design::icon(subject_glyph, scale.small, theme.secondary))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .child(subject),
+                    ),
+            )
+            .child(div().text_color(theme.secondary).child(detail))
+            .children(workspace_details)
+            .child(design::divider(&theme))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(space::LG))
+                    .child(design::hints(&theme, scale, &keys))
+                    .child(div().flex().gap(px(space::SM)).children(buttons)),
+            );
+        design::typeface(design::scrim(&theme, viewport), &theme, scale.ui)
+            .id("confirmation-scrim")
+            .flex()
+            .items_center()
+            .justify_center()
+            .occlude()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(dialog)
+            .into_any_element()
+    }
     fn popups(
         &mut self,
         window: &mut Window,
@@ -3013,232 +3389,10 @@ impl EditorView {
             height: f32::from(viewport.height),
         };
         self.popup_bounds.clear();
-        if let Some(confirm) = &self.confirmation {
-            let selected = confirm.selected;
-            let name = self
-                .model
-                .get(confirm.document)
-                .and_then(|e| e.buffer.path.as_ref())
-                .map_or_else(|| "Untitled".into(), |p| p.display().to_string());
-            let (title, detail, labels): (&str, &str, &[&str]) = match &confirm.decision {
-                Decision::Workspace { .. } => (
-                    "Apply workspace edit?",
-                    "Approval can change files on disk. Text edits stay unsaved and undoable. Reject or Escape leaves both unchanged. D shows the ordered changes.",
-                    &["Approve", "Reject", "Cancel"],
-                ),
-                Decision::Recovery(_) => (
-                    "Recover unsaved documents?",
-                    "Recovery opens local snapshots without overwriting disk. Later keeps the stored copies.",
-                    &["Recover", "Discard", "Later"],
-                ),
-                Decision::Close => (
-                    "Save changes before closing?",
-                    "Discard loses unsaved changes. Escape cancels.",
-                    &["Save", "Discard", "Cancel"],
-                ),
-                Decision::Conflict {
-                    overwrite: false, ..
-                } => (
-                    "File changed outside FilaVim",
-                    "Reload discards editor changes. Keep preserves both versions. Saving a copy leaves the original intact.",
-                    &["Reload", "Keep", "Save copy", "Overwrite…"],
-                ),
-                Decision::Conflict {
-                    overwrite: true, ..
-                } => (
-                    "Overwrite external changes?",
-                    "This replaces the disk version with your editor contents. Further disk changes will stop the save.",
-                    &["Overwrite", "Cancel"],
-                ),
-            };
-            let name = match &confirm.decision {
-                Decision::Conflict { path, actual, .. } => {
-                    let disk = match actual {
-                        crate::files::DiskState::Missing => "disk file is missing".into(),
-                        crate::files::DiskState::Present { bytes, .. } => {
-                            format!("disk: {bytes} bytes")
-                        }
-                    };
-                    let editor = self
-                        .model
-                        .get(confirm.document)
-                        .map_or(0, |e| e.buffer.text.len_bytes());
-                    format!("{} · {disk} · editor: {editor} bytes", path.display())
-                }
-                Decision::Recovery(entries) => format!(
-                    "{} documents: {}",
-                    entries.len(),
-                    entries
-                        .iter()
-                        .take(4)
-                        .map(|e| e
-                            .path
-                            .as_ref()
-                            .map_or_else(|| "Untitled".into(), |p| p.display().to_string()))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-                Decision::Workspace { token, .. } => self
-                    .services
-                    .workspace_approval
-                    .as_ref()
-                    .filter(|a| a.token == *token)
-                    .map_or_else(
-                        || "Expired workspace plan".into(),
-                        |a| {
-                            format!(
-                                "{} ordered changes · {} approval reasons",
-                                a.summaries.len(),
-                                a.reasons.len()
-                            )
-                        },
-                    ),
-                Decision::Close => name,
-            };
-            let expanded = matches!(confirm.decision, Decision::Workspace { expanded: true, .. });
-            let area = place(
-                full,
-                None,
-                (720., if expanded { 460. } else { 280. }),
-                false,
-            )
-            .menu;
-            let workspace_details: Option<AnyElement> =
-                if let Decision::Workspace {
-                    token, position, ..
-                } = confirm.decision
-                {
-                    self.services
-                        .workspace_approval
-                        .as_ref()
-                        .filter(|a| a.token == token)
-                        .map(|a| {
-                            let entries: std::sync::Arc<Vec<String>> = std::sync::Arc::new(
-                                a.reasons
-                                    .iter()
-                                    .map(|s| format!("Approval: {s}"))
-                                    .chain(a.summaries.iter().cloned())
-                                    .collect(),
-                            );
-                            if expanded {
-                                let selected = entries.get(position).cloned().unwrap_or_default();
-                                let background = self.theme.selection;
-                                let list = uniform_list(
-                                    "workspace-operations",
-                                    entries.len(),
-                                    move |range, _, _| {
-                                        range
-                                            .map(|i| {
-                                                div()
-                                                    .h(px(28.))
-                                                    .text_size(px(12.))
-                                                    .when(i == position, |d| d.bg(background))
-                                                    .overflow_hidden()
-                                                    .child(entries[i].clone())
-                                                    .into_any_element()
-                                            })
-                                            .collect()
-                                    },
-                                )
-                                .track_scroll(self.workspace_scroll.clone())
-                                .flex_1()
-                                .min_h(px(0.));
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .flex_1()
-                                    .min_h(px(0.))
-                                    .gap(px(8.))
-                                    .child(list)
-                                    .child(
-                                        div()
-                                            .id("workspace-operation-details")
-                                            .max_h(px(88.))
-                                            .overflow_y_scroll()
-                                            .text_size(px(12.))
-                                            .child(selected),
-                                    )
-                                    .into_any_element()
-                            } else {
-                                div()
-                                    .text_size(px(12.))
-                                    .child(
-                                        a.reasons
-                                            .iter()
-                                            .take(3)
-                                            .cloned()
-                                            .collect::<Vec<_>>()
-                                            .join("\n"),
-                                    )
-                                    .into_any_element()
-                            }
-                        })
-                } else {
-                    None
-                };
-            let buttons = labels
-                .iter()
-                .copied()
-                .enumerate()
-                .map(|(i, label)| {
-                    div()
-                        .id(("confirm-choice", i))
-                        .px(px(16.))
-                        .py(px(8.))
-                        .border_1()
-                        .border_color(self.theme.border)
-                        .bg(if i == selected {
-                            self.theme.selection
-                        } else {
-                            self.theme.overlay
-                        })
-                        .cursor_pointer()
-                        .child(label)
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |v, _, _, cx| {
-                                cx.stop_propagation();
-                                v.answer_close(i, cx);
-                            }),
-                        )
-                        .into_any_element()
-                })
-                .collect::<Vec<_>>();
-            let panel = div()
-                .absolute()
-                .left(px(area.x))
-                .top(px(area.y))
-                .w(px(area.width))
-                .h(px(area.height))
-                .bg(self.theme.overlay)
-                .border_1()
-                .border_color(self.theme.border)
-                .p(px(18.))
-                .flex()
-                .flex_col()
-                .gap(px(10.))
-                .child(title)
-                .child(
-                    div()
-                        .text_color(self.theme.secondary)
-                        .overflow_hidden()
-                        .child(name),
-                )
-                .child(div().child(detail))
-                .children(workspace_details)
-                .child(div().flex().gap(px(10.)).children(buttons));
-            let backdrop = div()
-                .w(viewport.width)
-                .h(viewport.height)
-                .font_family(FONT_FAMILY)
-                .text_size(px(self.model.editor.config.font_size))
-                .text_color(self.theme.text)
-                .occlude()
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(panel)
-                .into_any_element();
+        if self.confirmation.is_some() {
+            let dialog = self.confirmation_dialog(viewport, cx);
             self.popup_frames += 1;
-            return vec![(backdrop, point(px(0.), px(0.)))];
+            return vec![(dialog, point(px(0.), px(0.)))];
         }
         let popup_timer = crate::perf::Timer::start();
         let Some(panel) = &self.services.panel else {
@@ -3268,6 +3422,8 @@ impl EditorView {
                 .scroll_to_item_strict(0, ScrollStrategy::Top);
             self.documentation_scroll.set_offset(point(px(0.), px(0.)));
         }
+        let theme = self.theme;
+        let scale = self.scale();
         let presentation = panel.presentation;
         let selected = panel.selected;
         let contextual = !matches!(
@@ -3305,18 +3461,49 @@ impl EditorView {
             Presentation::Information | Presentation::InformationCentered
         ) || self.documentation_only;
         let minimal = contextual || self.documentation_only;
-        let font_size = self.model.editor.config.font_size.min(20.);
-        let row_height = (font_size * 1.5).ceil() + 6.;
+        let completion = presentation == Presentation::Completion;
+        // Code-bearing surfaces use the code size; navigational ones the UI size.
+        let code_size = self.model.editor.config.font_size.min(20.);
+        let font_size = if completion || presentation == Presentation::Information {
+            code_size
+        } else {
+            scale.ui
+        };
+        let row_height = if completion {
+            (code_size * 1.5).ceil() + 4.
+        } else {
+            scale.row()
+        };
+        let header = scale.row() + space::MD;
+        let footer = scale.row();
+        let diagnostics = panel.title == "Diagnostics";
         let detail = panel
             .rows
             .get(selected)
             .map(|r| r.detail.clone())
             .filter(|s| !s.is_empty());
+        // Minimal floats fit their text: Agave is monospaced, so wrapping can be
+        // estimated from the shaped cell advance without a layout pass.
+        let advance = f32::from(self.cell) * font_size / self.model.editor.config.font_size;
+        let text_height = |texts: &mut dyn Iterator<Item = &str>, width: f32| {
+            let columns = ((width - space::LG * 2. - 2.) / advance.max(1.)).max(1.) as usize;
+            let line = (font_size * 1.62).ceil();
+            texts
+                .map(|text| {
+                    text.lines()
+                        .map(|l| l.chars().count().div_ceil(columns).max(1))
+                        .sum::<usize>()
+                        .max(1) as f32
+                        * line
+                        + space::SM
+                })
+                .sum::<f32>()
+        };
         let placement = place(
             bounds,
             caret,
             (
-                if contextual { 450. } else { 720. },
+                if contextual { 460. } else { 680. },
                 if information {
                     if panel.kind == super::services::Kind::Signature {
                         panel
@@ -3328,22 +3515,44 @@ impl EditorView {
                             * font_size
                             * 1.5
                             + 36.
+                    } else if self.documentation_only {
+                        (text_height(
+                            &mut std::iter::once(detail.as_deref().unwrap_or("Loading")),
+                            460.,
+                        ) + space::LG
+                            + space::MD * 3.
+                            + 2.)
+                            .min(320.)
+                    } else if minimal {
+                        (text_height(
+                            &mut panel.rows.iter().take(100).map(|r| r.label.as_str()),
+                            460.,
+                        ) + space::LG
+                            + space::MD * 3.
+                            + 2.)
+                            .min(260.)
                     } else {
-                        260.
+                        (text_height(
+                            &mut panel.rows.iter().take(100).map(|r| r.label.as_str()),
+                            680.,
+                        ) + header
+                            + footer
+                            + space::MD * 2.
+                            + 4.)
+                            .clamp(header + footer + 72., 440.)
                     }
-                } else if presentation == Presentation::Completion {
-                    8. * row_height + 14.
+                } else if completion {
+                    panel.rows.len().clamp(1, 8) as f32 * row_height + space::LG + space::MD + 2.
                 } else {
-                    panel.rows.len().clamp(1, 8) as f32 * row_height + 64.
+                    panel.rows.len().clamp(1, 10) as f32 * row_height
+                        + header
+                        + footer
+                        + space::XS * 2.
+                        + 4.
                 },
             ),
             detail.is_some() && !self.documentation_only,
         );
-        let title = if self.documentation_only {
-            "Documentation · F1/Esc returns to suggestions".into()
-        } else {
-            panel.title.clone()
-        };
         let rows = if self.documentation_only {
             vec![
                 div()
@@ -3355,8 +3564,19 @@ impl EditorView {
                                 "No documentation supplied".into()
                             }
                         }),
-                        self.theme,
+                        theme,
                     ))
+                    .into_any_element(),
+            ]
+        } else if information && panel.rows.is_empty() {
+            vec![
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(space::SM))
+                    .text_color(theme.muted)
+                    .child(design::icon(icons::INFO, font_size, theme.muted))
+                    .child("Nothing to show yet.")
                     .into_any_element(),
             ]
         } else if information {
@@ -3365,31 +3585,43 @@ impl EditorView {
                 .iter()
                 .take(100)
                 .map(|r| {
-                    let color = if panel.title == "Diagnostics" {
-                        if r.label.starts_with("[Error]") {
-                            self.theme.error
-                        } else if r.label.starts_with("[Warning]") {
-                            self.theme.warning
-                        } else if r.label.starts_with("[Information]") {
-                            self.theme.info
-                        } else if r.label.starts_with("[Hint]") {
-                            self.theme.hint
-                        } else {
-                            self.theme.text
-                        }
-                    } else {
-                        self.theme.text
-                    };
-                    div()
-                        .mb(px(6.))
-                        .text_color(color)
-                        .child(match &r.choice {
-                            super::services::Choice::Signature(ranges) => {
-                                super::floating::signature(&r.label, ranges, self.theme)
-                            }
-                            _ => super::floating::documentation(r.label.clone(), self.theme),
+                    let severity = diagnostics
+                        .then(|| {
+                            [
+                                ("[Error]", 1),
+                                ("[Warning]", 2),
+                                ("[Information]", 3),
+                                ("[Hint]", 4),
+                            ]
+                            .into_iter()
+                            .find(|(tag, _)| r.label.starts_with(tag))
                         })
-                        .into_any_element()
+                        .flatten();
+                    let content = match &r.choice {
+                        super::services::Choice::Signature(ranges) => {
+                            super::floating::signature(&r.label, ranges, theme)
+                        }
+                        _ => super::floating::documentation(
+                            severity.map_or_else(
+                                || r.label.clone(),
+                                |(tag, _)| r.label[tag.len()..].trim_start().to_owned(),
+                            ),
+                            theme,
+                        ),
+                    };
+                    match severity {
+                        Some((_, level)) => {
+                            let (glyph, color) = design::severity(&theme, level);
+                            div()
+                                .flex()
+                                .gap(px(space::SM))
+                                .mb(px(space::SM))
+                                .child(design::icon(glyph, font_size, color))
+                                .child(div().flex_1().min_w(px(0.)).child(content))
+                                .into_any_element()
+                        }
+                        None => div().mb(px(space::SM)).child(content).into_any_element(),
+                    }
                 })
                 .collect::<Vec<_>>()
         } else {
@@ -3406,111 +3638,143 @@ impl EditorView {
                 .min_h(px(0.))
                 .overflow_y_scroll()
                 .track_scroll(&self.popup_scroll)
-                .p(px(8.))
+                .px(px(space::LG))
+                .py(px(space::MD))
                 .children(rows)
                 .into_any_element()
         } else {
             let entity = cx.entity();
             let request = panel.request;
             let count = panel.rows.len();
-            uniform_list("popup-list", count, move |range, _, cx| {
-                entity.update(cx, |v, cx| {
-                    range
-                        .filter_map(|i| v.popup_row(i, row_height, request, cx))
-                        .collect()
-                })
-            })
-            .track_scroll(self.popup_list_scroll.clone())
-            .flex_1()
-            .min_h(px(0.))
-            .into_any_element()
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h(px(0.))
+                .when(!minimal, |d| d.py(px(space::XS)))
+                .child(
+                    uniform_list("popup-list", count, move |range, _, cx| {
+                        entity.update(cx, |v, cx| {
+                            range
+                                .filter_map(|i| v.popup_row(i, row_height, request, cx))
+                                .collect()
+                        })
+                    })
+                    .track_scroll(self.popup_list_scroll.clone())
+                    .px(px(space::XS))
+                    .flex_1()
+                    .min_h(px(0.)),
+                )
+                .into_any_element()
         };
-        let icon = if presentation == Presentation::Completion && !self.documentation_only {
-            "⚡"
-        } else if panel.title == "Diagnostics" {
-            "!"
+        let (signal, signal_color) = if completion && !self.documentation_only {
+            (icons::ZAP, theme.warning)
+        } else if diagnostics {
+            (icons::WARNING, theme.warning)
+        } else if panel.kind == super::services::Kind::Signature {
+            (icons::SIGNATURE, theme.matched)
         } else {
-            "i"
+            (icons::INFO, theme.matched)
         };
-        let surface = super::floating::frame(self.theme, "floating-popup", font_size)
+        let title_glyph = match panel.title.as_str() {
+            "Commands" => icons::TERMINAL,
+            "Files" | "Project grep" => icons::SEARCH,
+            "Buffers" => icons::FILE,
+            "Diagnostics" => icons::WARNING,
+            _ => signal,
+        };
+        let title = if self.documentation_only {
+            "Documentation".to_owned()
+        } else {
+            panel.title.clone()
+        };
+        let count = (!information).then(|| format!("{} / {}", selected + 1, panel.rows.len()));
+        let surface = super::floating::frame(theme, "floating-popup", font_size)
             .w(dimensions.width)
             .h(dimensions.height)
-            .flex()
-            .flex_col()
             .when(minimal, |d| {
-                d.py(px(6.))
-                    .child(super::floating::indicator(self.theme, icon))
+                d.pt(px(space::LG)).pb(px(space::MD)).child(design::notch(
+                    &theme,
+                    signal,
+                    signal_color,
+                    scale.small,
+                ))
             })
             .when(!minimal, |d| {
                 d.child(
                     div()
-                        .h(px(row_height))
-                        .whitespace_nowrap()
-                        .text_ellipsis()
-                        .overflow_hidden()
-                        .flex_shrink_0()
-                        .px(px(10.))
-                        .py(px(4.))
-                        .text_color(self.theme.accent)
-                        .child(title),
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(px(space::MD))
+                        .h(px(header))
+                        .px(px(space::LG))
+                        .child(
+                            design::heading(&theme, scale, title_glyph, theme.accent, title)
+                                .flex_1()
+                                .min_w(px(0.)),
+                        )
+                        .when_some(count, |d, count| {
+                            d.child(
+                                div()
+                                    .flex_none()
+                                    .text_size(px(scale.micro))
+                                    .text_color(theme.muted)
+                                    .child(count),
+                            )
+                        }),
                 )
+                .child(design::divider(&theme))
             })
             .child(body)
-            .when(
-                !information && presentation != Presentation::Completion,
-                |d| {
-                    d.child(
-                        div()
-                            .h(px(24.))
-                            .flex_shrink_0()
-                            .px(px(10.))
-                            .text_size(px((font_size - 2.).max(12.)))
-                            .whitespace_nowrap()
-                            .overflow_hidden()
-                            .text_color(self.theme.secondary)
-                            .child(format!(
-                                "{} / {} · ↑↓ select · {} · Esc close{}{}",
-                                selected + 1,
-                                panel.rows.len(),
-                                if matches!(
-                                    presentation,
-                                    Presentation::Picker | Presentation::ContextMenu
-                                ) || self.model.editor.config.completion.accept_enter
-                                    && self.model.editor.config.completion.accept_tab
-                                {
-                                    "Enter/Tab accept"
-                                } else if self.model.editor.config.completion.accept_enter {
-                                    "Enter accepts"
-                                } else if self.model.editor.config.completion.accept_tab {
-                                    "Tab accepts"
-                                } else {
-                                    "click accepts"
-                                },
-                                if presentation == Presentation::Completion {
-                                    " · F1 docs"
-                                } else {
-                                    ""
-                                },
-                                if self.services.resolving_selected() {
-                                    " · resolving…"
-                                } else {
-                                    ""
-                                }
-                            )),
-                    )
-                },
-            )
+            .when(!minimal, |d| {
+                let keys: &[(&'static str, &'static str)] = if information {
+                    &[("PgUp PgDn", "scroll"), ("Esc", "close")]
+                } else {
+                    &[("↑ ↓", "select"), ("Enter", "accept"), ("Esc", "close")]
+                };
+                d.child(design::divider(&theme)).child(
+                    div()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .h(px(footer))
+                        .px(px(space::LG))
+                        .overflow_hidden()
+                        .child(design::hints(&theme, scale, keys)),
+                )
+            })
             .into_any_element();
-        let mut draws = vec![(surface, origin)];
+        let mut draws = Vec::with_capacity(4);
+        if !contextual {
+            // Centered panels take keyboard focus; dim the editor beneath them.
+            // The scrim has no listeners, so outside clicks still dismiss.
+            draws.push((
+                design::scrim(&theme, viewport)
+                    .bg(theme.scrim.opacity(0.6))
+                    .into_any_element(),
+                point(px(0.), px(0.)),
+            ));
+        }
+        draws.push((surface, origin));
         if let (Some(detail), Some(area)) = (detail, placement.documentation) {
             let origin = point(px(area.x), px(area.y));
-            let dimensions = size(px(area.width), px(area.height));
+            let height = (text_height(&mut std::iter::once(detail.as_str()), area.width)
+                + (space::MD + space::XS) * 2.
+                + 2.)
+                .min(area.height);
+            let dimensions = size(px(area.width), px(height));
             self.popup_bounds.push(Bounds::new(origin, dimensions));
             draws.push((
-                super::floating::frame(self.theme, "completion-documentation", font_size)
+                super::floating::frame(theme, "completion-documentation", font_size)
                     .w(dimensions.width)
                     .h(dimensions.height)
-                    .child(super::floating::indicator(self.theme, "i"))
+                    .child(design::notch(
+                        &theme,
+                        icons::INFO,
+                        theme.matched,
+                        scale.small,
+                    ))
                     .child(
                         div()
                             .id("completion-documentation-content")
@@ -3518,8 +3782,9 @@ impl EditorView {
                             .min_h(px(0.))
                             .overflow_y_scroll()
                             .track_scroll(&self.documentation_scroll)
-                            .p(px(10.))
-                            .child(super::floating::documentation(detail, self.theme)),
+                            .px(px(space::LG))
+                            .py(px(space::MD + space::XS))
+                            .child(super::floating::documentation(detail, theme)),
                     )
                     .into_any_element(),
                 origin,
@@ -3539,7 +3804,7 @@ impl EditorView {
                 bounds,
                 caret,
                 &occupied,
-                lines as f32 * font_size * 1.5 + 20.,
+                lines as f32 * code_size * 1.5 + 24.,
             ) {
                 let origin = point(px(area.x), px(area.y));
                 let dimensions = size(px(area.width), px(area.height));
@@ -3547,23 +3812,29 @@ impl EditorView {
                 let rows = signature.rows.iter().take(2).map(|row| {
                     let text = match &row.choice {
                         super::services::Choice::Signature(active) => {
-                            super::floating::signature(&row.label, active, self.theme)
+                            super::floating::signature(&row.label, active, theme)
                         }
                         _ => StyledText::new(row.label.clone()),
                     };
                     div().child(text)
                 });
                 draws.push((
-                    super::floating::frame(self.theme, "signature-assistance", font_size)
+                    super::floating::frame(theme, "signature-assistance", code_size)
                         .w(dimensions.width)
                         .h(dimensions.height)
-                        .child(super::floating::indicator(self.theme, "i"))
+                        .child(design::notch(
+                            &theme,
+                            icons::SIGNATURE,
+                            theme.matched,
+                            scale.small,
+                        ))
                         .child(
                             div()
                                 .flex_1()
                                 .min_h(px(0.))
                                 .overflow_hidden()
-                                .p(px(10.))
+                                .px(px(space::LG))
+                                .py(px(space::MD + space::XS))
                                 .children(rows),
                         )
                         .into_any_element(),
@@ -3603,30 +3874,33 @@ impl EditorView {
                         self.theme.active_line,
                     ));
                 }
+                // Matches keep their syntax colors (no reshaping on navigation):
+                // every match is a quiet tint, the current one is filled and outlined.
                 for &(start, end) in &row.search {
                     let left = row.shape.x_for_index(start);
                     let right = row.shape.x_for_index(end);
-                    window.paint_quad(fill(
+                    let current = e.search_revision == e.buffer.revision
+                        && e.search_ranges
+                            .binary_search_by_key(&e.buffer.cursor, |r| r.start)
+                            .ok()
+                            .is_some_and(|i| {
+                                let r = &e.search_ranges[i];
+                                r.start == e.buffer.cursor
+                                    && r.start >= row.source.start
+                                    && r.start <= row.source.end
+                                    && row.source.byte_for_char(r.start) == start
+                            });
+                    let color = self.theme.search;
+                    window.paint_quad(quad(
                         Bounds::new(
-                            point(row.origin.x + left, row.origin.y),
-                            size((right - left).max(px(1.)), px(self.line_height())),
+                            point(row.origin.x + left, row.origin.y + px(2.)),
+                            size((right - left).max(px(1.)), px(self.line_height() - 4.)),
                         ),
-                        if e.search_revision == e.buffer.revision
-                            && e.search_ranges
-                                .binary_search_by_key(&e.buffer.cursor, |r| r.start)
-                                .ok()
-                                .is_some_and(|i| {
-                                    let r = &e.search_ranges[i];
-                                    r.start == e.buffer.cursor
-                                        && r.start >= row.source.start
-                                        && r.start <= row.source.end
-                                        && row.source.byte_for_char(r.start) == start
-                                })
-                        {
-                            self.theme.selection
-                        } else {
-                            self.theme.search
-                        },
+                        Corners::all(px(design::radius::CONTROL - 1.)),
+                        color.opacity(if current { 0.32 } else { 0.16 }),
+                        px(if current { 1. } else { 0. }),
+                        color.opacity(0.9),
+                        BorderStyle::Solid,
                     ));
                 }
                 if !selection.is_empty()
@@ -3695,26 +3969,29 @@ impl EditorView {
                             .filter(|d| d.range.start.line == row.source.row as u32)
                     });
                 if let Some(diagnostic) = diagnostic {
-                    window.paint_quad(fill(
-                        Bounds::new(
-                            point(bounds.left() + px(4.), row.origin.y + px(6.)),
-                            size(px(4.), px(10.)),
-                        ),
-                        self.theme.diagnostic(diagnostic.severity),
-                    ));
+                    // A round severity mark in the gutter's leading margin.
+                    let mark = px(6.);
+                    window.paint_quad(
+                        fill(
+                            Bounds::new(
+                                point(
+                                    bounds.left() + px(8.),
+                                    row.origin.y + (px(self.line_height()) - mark) / 2.,
+                                ),
+                                size(mark, mark),
+                            ),
+                            self.theme.diagnostic(diagnostic.severity),
+                        )
+                        .corner_radii(Corners::all(mark / 2.)),
+                    );
                 }
-                let active = e.buffer.row() == row.source.row;
-                let number = if active {
-                    &row.active_number
-                } else {
-                    &row.number
-                };
+                let number = self
+                    .active_number
+                    .as_ref()
+                    .filter(|n| n.row == row.source.row && e.buffer.row() == n.row)
+                    .map_or(&row.number, |n| &n.line);
                 let origin = point(
-                    if active {
-                        bounds.left() + px(14.)
-                    } else {
-                        bounds.left() + px(gutter - 14.) - number.width
-                    },
+                    bounds.left() + px(gutter - 14.) - number.width,
                     row.origin.y,
                 );
                 if let Err(error) = number.paint(origin, px(self.line_height()), window, cx) {
@@ -3723,7 +4000,7 @@ impl EditorView {
             }
             for index in cache.lines.len()..cache.rows {
                 let origin = point(
-                    bounds.left() + px(14.),
+                    bounds.left() + px(gutter - 14.) - cache.end_marker.width,
                     bounds.top() + index as f32 * px(self.line_height()),
                 );
                 if let Err(error) =
@@ -3741,7 +4018,6 @@ fn syntax_runs(
     source: &VisibleLine,
     buffer: &crate::buffer::Buffer,
     spans: &[crate::syntax::Highlight],
-    search: &[(usize, usize)],
     theme: &Theme,
 ) -> Vec<TextRun> {
     let mut runs: Vec<TextRun> = Vec::new();
@@ -3756,7 +4032,7 @@ fn syntax_runs(
             .iter()
             .find(|s| s.range.contains(&byte))
             .map(|s| s.token);
-        let mut color = token.map_or_else(
+        let color = token.map_or_else(
             || {
                 if source.text[start..end]
                     .chars()
@@ -3769,9 +4045,6 @@ fn syntax_runs(
             },
             |token| theme.token(token),
         );
-        if search.iter().any(|&(a, b)| start >= a && start < b) {
-            color = theme.search_text;
-        }
         let mut run_font = font(FONT_FAMILY);
         if theme.italic_comments && token == Some(crate::syntax::Token::Comment) {
             run_font.style = FontStyle::Italic;
@@ -3820,18 +4093,83 @@ fn shape(window: &Window, text: &str, font_size: f32, color: Hsla) -> ShapedLine
         None,
     )
 }
-impl Render for EditorView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let sidebar_width = self
-            .explorer
-            .width
-            .min((f32::from(window.viewport_size().width) - 240.).max(100.));
-        let pre = cx.entity();
-        let paint = cx.entity();
-        let overlay = cx.entity();
-        let command_pre = cx.entity();
-        let command_paint = cx.entity();
-        let title_height = self.line_height();
+/// Shell composition. Every region is built from [`design`] tokens and components;
+/// see DESIGN.md for the layout grid and layer order.
+impl EditorView {
+    fn scale(&self) -> design::Scale {
+        design::Scale::new(self.model.editor.config.font_size)
+    }
+    fn toggle_explorer(&mut self) {
+        self.explorer.visible = !self.explorer.visible;
+        if !self.explorer.visible {
+            self.explorer.focused = false;
+        }
+        if self.explorer.visible && self.explorer.index.is_none() {
+            self.explorer.open(
+                self.explorer.root.clone(),
+                self.model.editor.config.navigation.clone(),
+            );
+        }
+    }
+    /// Title row: sidebar segment (aligned with the explorer), tabs, a drag region
+    /// and caption controls. Windows caption controls use native hit-testing only.
+    fn title_bar(
+        &self,
+        sidebar: Option<f32>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = self.theme;
+        let scale = self.scale();
+        let height = scale.title_bar();
+        let control = height - space::MD - space::XXS;
+        let mode = theme.mode(self.model.editor.mode);
+        // macOS draws its traffic lights over the leading edge of the row.
+        let inset = if cfg!(target_os = "macos") { 72. } else { 0. };
+        let project = self.explorer.root.file_name().map_or_else(
+            || self.explorer.root.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        let leading = div()
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(space::XS))
+            .h_full()
+            .pl(px(space::XS + inset))
+            .pr(px(space::SM))
+            .when_some(sidebar, |d, width| {
+                d.w(px(width.max(inset + control + space::LG)))
+                    .border_r_1()
+                    .border_color(theme.hairline)
+            })
+            .child(
+                design::icon_button(&theme, "toggle-explorer", icons::SIDEBAR, scale.ui, control)
+                    .when(self.explorer.visible, |d| d.text_color(theme.accent))
+                    .on_click(cx.listener(|v, _, w, cx| {
+                        cx.stop_propagation();
+                        v.toggle_explorer();
+                        v.focus(w, cx);
+                        cx.notify();
+                    })),
+            )
+            .when(sidebar.is_some(), |d| {
+                d.child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .text_size(px(scale.small))
+                        .text_color(if self.explorer.focused {
+                            theme.accent
+                        } else {
+                            theme.secondary
+                        })
+                        .child(project.to_uppercase()),
+                )
+            });
         let tabs = self
             .model
             .order
@@ -3845,30 +4183,33 @@ impl Render for EditorView {
                     .as_ref()
                     .and_then(|p| p.file_name())
                     .map_or_else(|| "Untitled".into(), |n| n.to_string_lossy().into_owned());
+                let (glyph, hue) = icons::file(&label);
                 let id = *id;
                 let active = id == self.model.id();
+                let group = SharedString::from(format!("tab-{id}"));
                 div()
                     .id(("tab", id))
+                    .group(group.clone())
+                    .relative()
                     .flex()
-                    .gap(px(6.))
-                    .items_center()
-                    .h(px(title_height))
-                    .min_w(px(80.))
-                    .max_w(px(240.))
                     .flex_shrink_0()
-                    .px(px(8.))
-                    .border_b_1()
-                    .border_color(if active {
-                        self.theme.accent
-                    } else {
-                        self.theme.border
-                    })
-                    .bg(if active {
-                        self.theme.active_tab
-                    } else {
-                        self.theme.chrome
-                    })
+                    .items_center()
+                    .gap(px(space::SM))
+                    .h(px(control))
+                    .min_w(px(72.))
+                    .max_w(px(220.))
+                    .pl(px(space::MD))
+                    .pr(px(space::XS))
+                    .rounded(px(design::radius::CONTROL))
                     .cursor_pointer()
+                    .text_color(if active { theme.text } else { theme.secondary })
+                    .map(|d| {
+                        if active {
+                            d.bg(theme.active_tab)
+                        } else {
+                            d.hover(|s| s.bg(theme.hover).text_color(theme.text))
+                        }
+                    })
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |v, _, w, cx| {
@@ -3878,12 +4219,15 @@ impl Render for EditorView {
                             v.changed(cx);
                         }),
                     )
-                    .text_color(if active {
-                        self.theme.text
-                    } else {
-                        self.theme.secondary
-                    })
-                    .hover(|d| d.bg(self.theme.selection))
+                    .child(design::icon(
+                        glyph,
+                        scale.ui,
+                        match hue {
+                            Some(hue) if active => theme.hue(hue),
+                            Some(hue) => theme.hue(hue).opacity(0.7),
+                            None => theme.secondary,
+                        },
+                    ))
                     .child(
                         div()
                             .flex_1()
@@ -3893,194 +4237,562 @@ impl Render for EditorView {
                             .overflow_hidden()
                             .child(label),
                     )
-                    .when(dirty, |d| {
-                        d.child(
-                            div()
-                                .flex_shrink_0()
-                                .text_color(self.theme.accent)
-                                .child("●"),
-                        )
-                    })
                     .child(
+                        // Unsaved documents show a dot; the close control replaces it
+                        // under the pointer, so a click always lands on a visible ×.
                         div()
-                            .id(("close", id))
-                            .w(px(18.))
-                            .flex_shrink_0()
-                            .text_center()
-                            .hover(|d| d.bg(self.theme.border))
-                            .child("×")
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |v, _, w, cx| {
-                                    cx.stop_propagation();
-                                    v.close_document(id, w, cx);
-                                }),
+                            .relative()
+                            .flex_none()
+                            .size(px(control - space::MD))
+                            .when(dirty, |d| {
+                                d.child(
+                                    div()
+                                        .absolute()
+                                        .size_full()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_size(px(scale.micro))
+                                        .text_color(theme.accent)
+                                        .child(icons::DOT)
+                                        .group_hover(group.clone(), |s| s.opacity(0.)),
+                                )
+                            })
+                            .child(
+                                design::icon_button(
+                                    &theme,
+                                    ("close", id),
+                                    icons::CLOSE,
+                                    scale.small,
+                                    control - space::MD,
+                                )
+                                .absolute()
+                                .opacity(if active && !dirty { 1. } else { 0. })
+                                .group_hover(group, |s| s.opacity(1.))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |v, _, w, cx| {
+                                        cx.stop_propagation();
+                                        v.close_document(id, w, cx);
+                                    }),
+                                ),
                             ),
                     )
+                    .when(active, |d| {
+                        d.child(
+                            div()
+                                .absolute()
+                                .bottom(px(0.))
+                                .left(px(space::MD))
+                                .right(px(space::MD))
+                                .h(px(2.))
+                                .rounded(px(1.))
+                                .bg(mode),
+                        )
+                    })
                     .into_any_element()
             })
             .collect::<Vec<_>>();
-        let explorer = if self.explorer.visible {
-            let count = self.explorer.rows.len();
-            let entity = cx.entity();
-            Some(
+        let caption = |id: &'static str, glyph: &'static str, area: WindowControlArea| {
+            let close = area == WindowControlArea::Close;
+            div()
+                .id(id)
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .w(px(46.))
+                .h_full()
+                .text_size(px(scale.ui))
+                .text_color(theme.secondary)
+                .window_control_area(area)
+                .hover(move |s| {
+                    if close {
+                        s.bg(theme.error).text_color(gpui::white())
+                    } else {
+                        s.bg(theme.hover).text_color(theme.text)
+                    }
+                })
+                .child(glyph)
+        };
+        let maximize_glyph = if window.is_maximized() {
+            icons::RESTORE
+        } else {
+            icons::MAXIMIZE
+        };
+        let captions: Vec<AnyElement> = if cfg!(target_os = "macos") {
+            Vec::new()
+        } else {
+            let minimize = caption("caption-minimize", icons::MINIMIZE, WindowControlArea::Min);
+            let maximize = caption("caption-maximize", maximize_glyph, WindowControlArea::Max);
+            let close = caption("close-application", icons::CLOSE, WindowControlArea::Close);
+            // Windows resolves these regions through WM_NCHITTEST; clicks are also
+            // delivered to elements there, so listeners would act twice.
+            #[cfg(not(windows))]
+            let (minimize, maximize, close) = (
+                minimize.on_click(|_, w, _| w.minimize_window()),
+                maximize.on_click(|_, w, _| w.zoom_window()),
+                close.on_click(cx.listener(|v, _, w, cx| {
+                    cx.stop_propagation();
+                    v.close(w, cx);
+                })),
+            );
+            vec![
+                minimize.into_any_element(),
+                maximize.into_any_element(),
+                close.into_any_element(),
+            ]
+        };
+        div()
+            .id("title-bar")
+            .flex()
+            .flex_none()
+            .items_center()
+            .h(px(height))
+            .bg(theme.chrome)
+            .border_b_1()
+            .border_color(theme.hairline)
+            .text_size(px(scale.ui))
+            .child(leading)
+            .child(
                 div()
-                    .w(px(sidebar_width))
-                    .h_full()
-                    .flex_shrink_0()
-                    .bg(self.theme.sidebar)
+                    .id("document-tabs")
                     .flex()
-                    .flex_col()
-                    .child(
-                        div()
-                            .px(px(12.))
-                            .py(px(8.))
-                            .text_color(self.theme.secondary)
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_ellipsis()
-                            .child(self.explorer.root.file_name().map_or_else(
-                                || "Project".into(),
-                                |n| n.to_string_lossy().into_owned(),
-                            )),
-                    )
-                    .child(
-                        uniform_list("explorer", count, move |range, _, cx| {
-                            entity.update(cx, |v, cx| {
-                                range
-                                    .map(|i| {
-                                        let row = &v.explorer.rows[i];
-                                        let label = format!(
-                                            "{}{}",
-                                            if row.entry.directory {
-                                                if row.expanded { "▾ " } else { "▸ " }
-                                            } else {
-                                                "  "
-                                            },
-                                            row.entry.path.file_name().map_or_else(
-                                                || row.entry.label.clone(),
-                                                |n| n.to_string_lossy().into_owned()
-                                            )
-                                        );
-                                        let active = v.model.editor.buffer.path.as_ref()
-                                            == Some(&row.entry.path);
-                                        div()
-                                            .id(("file", i))
-                                            .h(px(29.))
-                                            .py(px(3.))
-                                            .pr(px(8.))
-                                            .whitespace_nowrap()
-                                            .text_ellipsis()
-                                            .text_color(if row.entry.directory {
-                                                v.theme.secondary
-                                            } else {
-                                                v.theme.text
-                                            })
-                                            .hover(|d| d.bg(v.theme.selection))
-                                            .pl(px(10. + row.depth as f32 * 14.))
-                                            .overflow_hidden()
-                                            .bg(
-                                                if active
-                                                    || v.explorer.focused
-                                                        && v.explorer.selected == i
-                                                {
-                                                    v.theme.selection
-                                                } else {
-                                                    v.theme.sidebar.opacity(0.)
-                                                },
-                                            )
-                                            .cursor_pointer()
-                                            .child(label)
-                                            .on_mouse_down(
-                                                MouseButton::Left,
-                                                cx.listener(move |v, _, w, cx| {
-                                                    v.explorer.focused = true;
-                                                    v.focus(w, cx);
-                                                    if let Some(path) = v.explorer.activate(i) {
-                                                        v.explorer.focused = false;
-                                                        v.request(
-                                                            Request::Open {
-                                                                path,
-                                                                revision: v
-                                                                    .model
-                                                                    .editor
-                                                                    .buffer
-                                                                    .revision,
-                                                            },
-                                                            cx,
-                                                        );
-                                                    }
-                                                    cx.notify();
-                                                }),
-                                            )
-                                            .into_any_element()
-                                    })
-                                    .collect()
-                            })
-                        })
-                        .track_scroll(self.explorer_scroll.clone())
-                        .flex_1(),
-                    )
-                    .into_any_element(),
+                    .items_center()
+                    .gap(px(space::XXS))
+                    .px(px(space::XS))
+                    .h_full()
+                    .flex_shrink()
+                    .min_w(px(0.))
+                    .overflow_x_scroll()
+                    .children(tabs),
             )
+            .child(
+                div()
+                    .id("title-bar-drag")
+                    .flex_1()
+                    .min_w(px(32.))
+                    .h_full()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|v, event: &MouseDownEvent, window, cx| {
+                            cx.stop_propagation();
+                            if event.click_count == 2 {
+                                v.title_drag = None;
+                                window.zoom_window();
+                            } else {
+                                v.title_drag = Some(event.position);
+                            }
+                        }),
+                    ),
+            )
+            .children(captions)
+            .into_any_element()
+    }
+    fn explorer_panel(&self, width: f32, cx: &mut Context<Self>) -> AnyElement {
+        let theme = self.theme;
+        let scale = self.scale();
+        let row_height = scale.row();
+        let count = self.explorer.rows.len();
+        let body = if count == 0 {
+            let (glyph, text) = if self.explorer.index.is_none() {
+                (icons::SYNC, "Indexing project…")
+            } else {
+                (icons::FOLDER, "No files to show")
+            };
+            div()
+                .flex()
+                .items_center()
+                .gap(px(space::SM))
+                .px(px(space::LG))
+                .py(px(space::MD))
+                .text_size(px(scale.small))
+                .text_color(theme.muted)
+                .child(design::icon(glyph, scale.small, theme.muted))
+                .child(text)
+                .into_any_element()
+        } else {
+            let entity = cx.entity();
+            uniform_list("explorer", count, move |range, _, cx| {
+                entity.update(cx, |v, cx| {
+                    range.map(|i| v.explorer_row(i, row_height, cx)).collect()
+                })
+            })
+            .track_scroll(self.explorer_scroll.clone())
+            .px(px(space::XS))
+            .flex_1()
+            .into_any_element()
+        };
+        div()
+            .relative()
+            .w(px(width))
+            .h_full()
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .pt(px(space::XS))
+            .bg(theme.sidebar)
+            .border_r_1()
+            .border_color(theme.hairline)
+            .text_size(px(scale.ui))
+            .child(body)
+            .child(
+                div()
+                    .id("explorer-resize")
+                    .absolute()
+                    .top(px(0.))
+                    .right(px(0.))
+                    .w(px(4.))
+                    .h_full()
+                    .cursor(CursorStyle::ResizeLeftRight)
+                    .when(self.resizing, |d| d.bg(theme.accent.opacity(0.5)))
+                    .hover(|s| s.bg(theme.accent.opacity(0.35)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|v, _, _, cx| {
+                            v.resizing = true;
+                            cx.stop_propagation();
+                            cx.notify();
+                        }),
+                    ),
+            )
+            .into_any_element()
+    }
+    fn explorer_row(&self, i: usize, height: f32, cx: &mut Context<Self>) -> AnyElement {
+        let theme = self.theme;
+        let scale = self.scale();
+        let row = &self.explorer.rows[i];
+        let name = row.entry.path.file_name().map_or_else(
+            || row.entry.label.clone(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        let active = self.model.editor.buffer.path.as_ref() == Some(&row.entry.path);
+        let selected = self.explorer.focused && self.explorer.selected == i;
+        let (glyph, color) = if row.entry.directory {
+            (
+                if row.expanded {
+                    icons::FOLDER_OPEN
+                } else {
+                    icons::FOLDER
+                },
+                theme.secondary,
+            )
+        } else {
+            let (glyph, hue) = icons::file(&name);
+            (glyph, hue.map_or(theme.secondary, |h| theme.hue(h)))
+        };
+        design::row(&theme, ("file", i), selected)
+            .h(px(height))
+            .pl(px(space::XS + row.depth as f32 * 12.))
+            .gap(px(space::XS))
+            .text_color(if active || selected {
+                theme.text
+            } else {
+                theme.secondary
+            })
+            .when(active && !selected, |d| d.bg(theme.hover))
+            .child(design::icon(
+                if !row.entry.directory {
+                    ""
+                } else if row.expanded {
+                    icons::CHEVRON_DOWN
+                } else {
+                    icons::CHEVRON_RIGHT
+                },
+                scale.micro,
+                theme.muted,
+            ))
+            .child(design::icon(glyph, scale.ui, color))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .child(name),
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |v, _, w, cx| {
+                    v.explorer.focused = true;
+                    v.focus(w, cx);
+                    if let Some(path) = v.explorer.activate(i) {
+                        v.explorer.focused = false;
+                        v.request(
+                            Request::Open {
+                                path,
+                                revision: v.model.editor.buffer.revision,
+                            },
+                            cx,
+                        );
+                    }
+                    cx.notify();
+                }),
+            )
+            .into_any_element()
+    }
+    /// Status bar: mode, document identity and transient work on the left; search,
+    /// diagnostics and position on the right. Empty segments are omitted, not zeroed.
+    fn status_bar(&self) -> AnyElement {
+        let theme = self.theme;
+        let scale = self.scale();
+        let e = &self.model.editor;
+        let mode = theme.mode(e.mode);
+        let (directory, name) = match &e.buffer.path {
+            Some(path) => {
+                let shown = design::display_path(path, &self.explorer.root);
+                match shown.rfind(std::path::is_separator) {
+                    Some(at) => (shown[..=at].to_owned(), shown[at + 1..].to_owned()),
+                    None => (String::new(), shown),
+                }
+            }
+            None => (String::new(), "Untitled".to_owned()),
+        };
+        let (glyph, hue) = icons::file(&name);
+        let mut counts = [0usize; 4];
+        for (_, (_, _, items)) in
+            self.services
+                .diagnostics
+                .iter()
+                .filter(|((_, id), (revision, _, _))| {
+                    *id == e.document_id && *revision == e.buffer.revision
+                })
+        {
+            for d in items {
+                counts[(d.severity.clamp(1, 4) - 1) as usize] += 1;
+            }
+        }
+        let attached = counts.iter().any(|c| *c > 0) || self.services.completion_ready(&self.model);
+        let work = if let Some(status) = self.services.workspace_status() {
+            Some(status)
+        } else if self.busy || self.tool_busy {
+            Some("Working…".into())
         } else {
             None
         };
-        let e = &self.model.editor;
-        let path = e
-            .buffer
-            .path
-            .as_ref()
-            .map_or_else(|| "[No Name]".into(), |p| p.display().to_string());
-        let diagnostic_count: usize = self
-            .services
-            .diagnostics
-            .iter()
-            .filter(|((_, id), (revision, _, _))| {
-                *id == e.document_id && *revision == e.buffer.revision
-            })
-            .map(|(_, (_, _, d))| d.len())
-            .sum();
-        let search_status = if e.last_search.is_empty() {
-            String::new()
+        let search = if e.last_search.is_empty() {
+            None
         } else if e.search_error {
-            " · invalid search".into()
+            Some(("invalid pattern".to_owned(), theme.error))
         } else if e.search_revision != e.buffer.revision {
-            " · updating search…".into()
+            Some(("updating…".to_owned(), theme.muted))
         } else {
             let position = e
                 .search_ranges
                 .binary_search_by_key(&e.buffer.cursor, |r| r.start)
                 .ok()
                 .map_or(0, |i| i + 1);
-            format!(" · {position}/{} matches", e.search_ranges.len())
+            Some((
+                format!("{position}/{}", e.search_ranges.len()),
+                theme.secondary,
+            ))
         };
-        let location = format!(
-            "{}:{}  ·  {} diagnostics{}",
-            e.buffer.row() + 1,
-            e.buffer.column(e.config.tab_width) + 1,
-            diagnostic_count,
-            search_status
-        );
-        let status = format!(
-            "{}{}{}",
-            path,
-            if e.buffer.dirty() { "  [+]" } else { "" },
-            if let Some(status) = self.services.workspace_status() {
-                format!("  ·  {status}")
-            } else if self.busy || self.tool_busy {
-                "  ·  Working…".into()
-            } else {
-                String::new()
-            }
-        );
-        let command = if e.mode == Mode::Command {
-            format!("{}{}", if e.searching { "/" } else { ":" }, e.command)
-        } else if e.help {
-            "W/A/S/D move · I insert · V visual · U undo · Ctrl-R redo · :e path · :w · :q · Esc close help".into()
+        let segment = || div().flex().flex_none().items_center().gap(px(space::XS));
+        let count = |glyph: &'static str, n: usize, color: Hsla| {
+            segment()
+                .text_color(if n > 0 { color } else { theme.muted })
+                .child(design::icon(
+                    glyph,
+                    scale.small,
+                    if n > 0 { color } else { theme.muted },
+                ))
+                .child(n.to_string())
+        };
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(px(space::LG))
+            .h(px(scale.status_bar()))
+            .px(px(space::SM))
+            .overflow_hidden()
+            .bg(theme.chrome)
+            .border_t_1()
+            .border_color(theme.hairline)
+            .text_size(px(scale.small))
+            .text_color(theme.secondary)
+            .child(
+                design::badge(e.mode.label(), mode, scale.small)
+                    .h(px(scale.status_bar() - space::MD)),
+            )
+            .child(
+                segment()
+                    .flex_shrink()
+                    .min_w(px(0.))
+                    .child(design::icon(
+                        glyph,
+                        scale.small,
+                        hue.map_or(theme.secondary, |h| theme.hue(h)),
+                    ))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_shrink()
+                            .min_w(px(0.))
+                            .child(
+                                div()
+                                    .flex_shrink()
+                                    .min_w(px(0.))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .text_color(theme.muted)
+                                    .child(directory),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .whitespace_nowrap()
+                                    .text_color(theme.text)
+                                    .child(name),
+                            ),
+                    )
+                    .when(e.buffer.dirty(), |d| {
+                        d.child(div().flex_none().text_color(theme.accent).child("modified"))
+                    }),
+            )
+            .when_some(work, |d, work| {
+                d.child(
+                    segment()
+                        .flex_shrink()
+                        .min_w(px(0.))
+                        .overflow_hidden()
+                        .text_color(theme.muted)
+                        .child(design::icon(icons::SYNC, scale.small, theme.muted))
+                        .child(
+                            div()
+                                .min_w(px(0.))
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .child(work),
+                        ),
+                )
+            })
+            .child(div().flex_1())
+            .when_some(search, |d, (text, color)| {
+                d.child(
+                    segment()
+                        .text_color(color)
+                        .child(design::icon(icons::SEARCH, scale.small, color))
+                        .child(text),
+                )
+            })
+            .when(attached, |d| {
+                d.child(
+                    segment()
+                        .gap(px(space::MD))
+                        .child(count(icons::ERROR, counts[0], theme.error))
+                        .child(count(icons::WARNING, counts[1], theme.warning))
+                        .when(counts[2] + counts[3] > 0, |d| {
+                            d.child(count(icons::INFO, counts[2] + counts[3], theme.info))
+                        }),
+                )
+            })
+            .child(
+                segment()
+                    .pr(px(space::XS))
+                    .text_color(theme.secondary)
+                    .child(format!(
+                        "{}:{}",
+                        e.buffer.row() + 1,
+                        e.buffer.column(e.config.tab_width) + 1
+                    )),
+            )
+            .into_any_element()
+    }
+    /// Command line: shaped command input in Command mode, otherwise feedback.
+    /// Its height is the code line height because the command caret uses it.
+    fn command_bar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = self.theme;
+        let scale = self.scale();
+        let e = &self.model.editor;
+        let bar = div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .h(px(self.line_height()))
+            .overflow_hidden()
+            .px(px(space::LG))
+            .bg(theme.chrome)
+            .line_height(px(self.line_height()));
+        if e.mode == Mode::Command {
+            let text = format!("{}{}", if e.searching { "/" } else { ":" }, e.command);
+            let prepare = cx.entity();
+            let paint = cx.entity();
+            return bar
+                .text_size(px(e.config.font_size))
+                .child(
+                    canvas(
+                        move |bounds, window, cx| {
+                            prepare.update(cx, |view, cx| {
+                                view.prepare_command(bounds, text, window, cx)
+                            })
+                        },
+                        move |_, (), window, cx| {
+                            paint.update(cx, |view, cx| view.paint_command(window, cx))
+                        },
+                    )
+                    .size_full(),
+                )
+                .into_any_element();
+        }
+        let bar = bar.text_size(px(scale.small)).gap(px(space::SM));
+        if e.help {
+            return bar
+                .child(design::hints(
+                    &theme,
+                    scale,
+                    &[
+                        ("W A S D", "move"),
+                        ("I", "insert"),
+                        ("V", "visual"),
+                        ("U", "undo"),
+                        ("Ctrl R", "redo"),
+                        (":e", "open"),
+                        (":w", "save"),
+                        (":q", "quit"),
+                        ("Esc", "close help"),
+                    ],
+                ))
+                .into_any_element();
+        }
+        bar.text_color(if e.error {
+            theme.error
         } else {
-            e.message.clone()
-        };
+            theme.secondary
+        })
+        .when(e.error && !e.message.is_empty(), |d| {
+            d.child(design::icon(icons::ERROR, scale.small, theme.error))
+        })
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .child(e.message.clone()),
+        )
+        .into_any_element()
+    }
+}
+impl Render for EditorView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let sidebar_width = self
+            .explorer
+            .width
+            .min((f32::from(window.viewport_size().width) - 240.).max(100.));
+        let pre = cx.entity();
+        let paint = cx.entity();
+        let overlay = cx.entity();
+        let explorer = self
+            .explorer
+            .visible
+            .then(|| self.explorer_panel(sidebar_width, cx));
+        let title = self.title_bar(self.explorer.visible.then_some(sidebar_width), window, cx);
+        let status = self.status_bar();
+        let command = self.command_bar(cx);
         div()
             .relative()
             .size_full()
@@ -4127,82 +4839,31 @@ impl Render for EditorView {
             }))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|v, _, _, _| {
+                cx.listener(|v, _, _, cx| {
+                    if v.resizing {
+                        cx.notify();
+                    }
                     v.resizing = false;
                     v.title_drag = None;
                 }),
             )
             .on_mouse_up_out(
                 MouseButton::Left,
-                cx.listener(|v, _, _, _| {
+                cx.listener(|v, _, _, cx| {
+                    if v.resizing {
+                        cx.notify();
+                    }
                     v.resizing = false;
                     v.title_drag = None;
                 }),
             )
-            .child(
-                div()
-                    .id("title-bar")
-                    .flex()
-                    .h(px(title_height))
-                    .flex_shrink_0()
-                    .bg(self.theme.chrome)
-                    .text_size(px(e.config.font_size))
-                    .line_height(px(title_height))
-                    .child(
-                        div()
-                            .id("document-tabs")
-                            .flex()
-                            .flex_shrink()
-                            .min_w(px(0.))
-                            .max_w_full()
-                            .overflow_x_scroll()
-                            .children(tabs),
-                    )
-                    .child(
-                        div()
-                            .id("title-bar-drag")
-                            .flex_1()
-                            .min_w(px(32.))
-                            .h_full()
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|v, event: &MouseDownEvent, _, cx| {
-                                    v.title_drag = Some(event.position);
-                                    cx.stop_propagation();
-                                }),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .id("close-application")
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .w(px(title_height))
-                            .h_full()
-                            .flex_shrink_0()
-                            .cursor_pointer()
-                            .text_color(self.theme.secondary)
-                            .hover(|d| d.bg(self.theme.selection).text_color(self.theme.text))
-                            .child("×")
-                            .on_click(cx.listener(|v, _, w, cx| {
-                                cx.stop_propagation();
-                                v.close(w, cx);
-                            })),
-                    ),
-            )
+            .child(title)
             .child(
                 div()
                     .flex()
                     .flex_1()
                     .min_h(px(0.))
                     .children(explorer)
-                    .when(self.explorer.visible, |d| {
-                        d.child(div().w(px(3.)).h_full().flex_shrink_0().on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|v, _, _, _| v.resizing = true),
-                        ))
-                    })
                     .child(
                         div()
                             .relative()
@@ -4241,78 +4902,8 @@ impl Render for EditorView {
                     ),
             )
             .children(self.manager_notice(cx))
-            .child(
-                div()
-                    .h(px(self.line_height()))
-                    .overflow_hidden()
-                    .flex_shrink_0()
-                    .px(px(12.))
-                    .bg(self.theme.chrome)
-                    .text_size(px(e.config.font_size))
-                    .line_height(px(self.line_height()))
-                    .flex()
-                    .items_center()
-                    .gap(px(12.))
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .px(px(8.))
-                            .text_color(self.theme.mode(e.mode))
-                            .child(format!("-- {} --", e.mode.label())),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .whitespace_nowrap()
-                            .text_ellipsis()
-                            .overflow_hidden()
-                            .child(status),
-                    )
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .max_w(px(f32::from(window.viewport_size().width) * 0.55))
-                            .whitespace_nowrap()
-                            .text_ellipsis()
-                            .overflow_hidden()
-                            .text_color(self.theme.secondary)
-                            .child(location),
-                    ),
-            )
-            .child(
-                div()
-                    .h(px(self.line_height()))
-                    .overflow_hidden()
-                    .flex_shrink_0()
-                    .px(px(12.))
-                    .text_size(px(e.config.font_size))
-                    .line_height(px(self.line_height()))
-                    .bg(self.theme.chrome)
-                    .text_color(if e.error {
-                        self.theme.error
-                    } else {
-                        self.theme.secondary
-                    })
-                    .when(e.mode == Mode::Command, |d| {
-                        let text = command.clone();
-                        d.child(
-                            canvas(
-                                move |bounds, window, cx| {
-                                    command_pre.update(cx, |view, cx| {
-                                        view.prepare_command(bounds, text, window, cx)
-                                    })
-                                },
-                                move |_, (), window, cx| {
-                                    command_paint
-                                        .update(cx, |view, cx| view.paint_command(window, cx))
-                                },
-                            )
-                            .size_full(),
-                        )
-                    })
-                    .when(e.mode != Mode::Command, |d| d.child(command)),
-            )
+            .child(status)
+            .child(command)
             .child(
                 canvas(
                     move |_, window, cx| {

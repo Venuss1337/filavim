@@ -25,7 +25,6 @@ use gpui::{prelude::*, *};
 /// Tab well geometry. Agave is monospaced, so tab widths are computed rather than
 /// measured, which lets the lens glide between known positions.
 struct Tabs {
-    control: f32,
     pad: f32,
     gap: f32,
     slot: f32,
@@ -66,7 +65,6 @@ impl EditorView {
             .map_or(scale.ui * 0.6, |s| f32::from(s.width));
         let control = scale.control();
         let geometry = Tabs {
-            control,
             pad: 3.,
             gap: 2.,
             slot: control - 10.,
@@ -466,7 +464,11 @@ impl EditorView {
                 .flex_shrink()
                 .min_w(px(0.))
                 .overflow_hidden()
-                .text_color(if e.error { theme.error } else { theme.secondary })
+                .text_color(if e.error {
+                    theme.error
+                } else {
+                    theme.secondary
+                })
                 .when(e.error, |d| {
                     d.child(design::icon(icons::ERROR, scale.small, theme.error))
                 })
@@ -553,6 +555,8 @@ impl EditorView {
                 d.child(
                     segment()
                         .gap(px(space::MD))
+                        // Language intelligence is attached to this document.
+                        .child(design::icon(icons::SERVER, scale.small, theme.muted))
                         .child(count(icons::ERROR, counts[0], theme.error))
                         .child(count(icons::WARNING, counts[1], theme.warning))
                         .when(counts[2] + counts[3] > 0, |d| {
@@ -584,10 +588,20 @@ impl EditorView {
     /// from the text up into it. Its height is one code line plus padding.
     pub(super) fn command_lens(
         &mut self,
-        area: Size<Pixels>,
+        area: Bounds<Pixels>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
+        let line = self.line_height();
+        let height = line + space::LG * 2. - 4.;
+        let width = (f32::from(area.size.width) - space::XXXL * 3.)
+            .min(760.)
+            .max(260.);
+        let left = ((f32::from(area.size.width) - width) / 2.).max(space::MD);
+        self.lens_frame = Some(Bounds::new(
+            area.origin + point(px(left), px(space::XL)),
+            size(px(width), px(height)),
+        ));
         let now = self.clock.now();
         let e = &self.model.editor;
         if e.mode != Mode::Command {
@@ -601,14 +615,8 @@ impl EditorView {
         }
         let theme = self.theme;
         let scale = self.scale();
-        let line = self.line_height();
-        let height = line + space::LG * 2. - 4.;
-        let width = (f32::from(area.width) - space::XXXL * 3.)
-            .min(760.)
-            .max(260.);
-        let left = ((f32::from(area.width) - width) / 2.).max(space::MD);
         let searching = e.searching;
-        let text = format!("{}{}", if searching { "/" } else { ":" }, e.command);
+        let text = e.command.clone();
         let prepare = cx.entity();
         let paint = cx.entity();
         let signal = theme.mode(Mode::Command);
@@ -636,9 +644,10 @@ impl EditorView {
                         .bg(signal.opacity(0.16))
                         .border_1()
                         .border_color(signal.opacity(0.4))
-                        .text_size(px(scale.small))
+                        .text_size(px(scale.ui))
+                        .font_weight(FontWeight::BOLD)
                         .text_color(signal)
-                        .child(if searching { icons::SEARCH } else { icons::TERMINAL }),
+                        .child(if searching { icons::SEARCH } else { ":" }),
                 )
                 .child(
                     div()
@@ -661,11 +670,11 @@ impl EditorView {
                             .size_full(),
                         ),
                 )
-                .child(
-                    div()
-                        .flex_none()
-                        .child(design::hints(&theme, scale, &[("↵", "run"), ("Esc", "cancel")])),
-                )
+                .child(div().flex_none().child(design::hints(
+                    &theme,
+                    scale,
+                    &[("↵", "run"), ("Esc", "cancel")],
+                )))
                 .into_any_element(),
         )
     }
@@ -735,10 +744,10 @@ impl EditorView {
                 .h(px(scale.row()))
                 .child(div().text_color(theme.secondary).child(label))
                 .child(
-                    div()
-                        .flex()
-                        .gap(px(space::XS))
-                        .children(keys.split(' ').map(|key| design::keycap(&theme, scale, key))),
+                    div().flex().gap(px(space::XS)).children(
+                        keys.split(' ')
+                            .map(|key| design::keycap(&theme, scale, key)),
+                    ),
                 )
         };
         Some(
@@ -768,15 +777,11 @@ impl EditorView {
                                         .text_color(theme.text)
                                         .child("filavim"),
                                 )
-                                .child(
-                                    div()
-                                        .mb(px(scale.display * 0.18))
-                                        .child(design::badge(
-                                            concat!("v", env!("CARGO_PKG_VERSION")),
-                                            theme.accent,
-                                            scale.micro,
-                                        )),
-                                ),
+                                .child(div().mb(px(scale.display * 0.18)).child(design::badge(
+                                    concat!("v", env!("CARGO_PKG_VERSION")),
+                                    theme.accent,
+                                    scale.micro,
+                                ))),
                         )
                         .child(
                             div()
@@ -930,59 +935,63 @@ impl EditorView {
             let (glyph, hue) = icons::file(&name);
             (glyph, hue.map_or(theme.muted, |h| theme.hue(h)))
         };
-        design::row(&theme, ("file", i), selected || active && !self.explorer.focused)
-            .h(px(height))
-            .pl(px(space::XS + row.depth as f32 * 14.))
-            .gap(px(space::XS))
-            .when(!(selected || active), |d| {
-                d.text_color(if row.entry.directory {
-                    theme.secondary
-                } else {
-                    theme.muted
-                })
+        design::row(
+            &theme,
+            ("file", i),
+            selected || active && !self.explorer.focused,
+        )
+        .h(px(height))
+        .pl(px(space::XS + row.depth as f32 * 14.))
+        .gap(px(space::XS))
+        .when(!(selected || active), |d| {
+            d.text_color(if row.entry.directory {
+                theme.secondary
+            } else {
+                theme.muted
             })
-            .child(design::icon(
-                if !row.entry.directory {
-                    ""
-                } else if row.expanded {
-                    icons::CHEVRON_DOWN
-                } else {
-                    icons::CHEVRON_RIGHT
-                },
-                scale.micro,
-                theme.faint,
-            ))
-            .child(design::icon(glyph, scale.ui, color))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .child(name),
-            )
-            .when(active, |d| {
-                d.child(design::light(self.theme.mode(self.model.editor.mode), 5.))
-            })
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |v, _, w, cx| {
-                    v.explorer.focused = true;
-                    v.focus(w, cx);
-                    if let Some(path) = v.explorer.activate(i) {
-                        v.explorer.focused = false;
-                        v.request(
-                            Request::Open {
-                                path,
-                                revision: v.model.editor.buffer.revision,
-                            },
-                            cx,
-                        );
-                    }
-                    cx.notify();
-                }),
-            )
-            .into_any_element()
+        })
+        .child(design::icon(
+            if !row.entry.directory {
+                ""
+            } else if row.expanded {
+                icons::CHEVRON_DOWN
+            } else {
+                icons::CHEVRON_RIGHT
+            },
+            scale.micro,
+            theme.faint,
+        ))
+        .child(design::icon(glyph, scale.ui, color))
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .overflow_hidden()
+                .text_ellipsis()
+                .child(name),
+        )
+        .when(active, |d| {
+            d.child(design::light(self.theme.mode(self.model.editor.mode), 5.))
+        })
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |v, _, w, cx| {
+                v.explorer.focused = true;
+                v.focus(w, cx);
+                if let Some(path) = v.explorer.activate(i) {
+                    v.explorer.focused = false;
+                    v.request(
+                        Request::Open {
+                            path,
+                            revision: v.model.editor.buffer.revision,
+                        },
+                        cx,
+                    );
+                }
+                cx.notify();
+            }),
+        )
+        .into_any_element()
     }
 }
 
@@ -997,8 +1006,11 @@ impl Render for EditorView {
             requested,
         );
         // The stage paints the pane materials from the same geometry.
-        self.stage
-            .update(cx, |stage, cx| stage.set_sidebar(requested, cx));
+        if self.stage_sidebar != Some(requested) {
+            self.stage_sidebar = Some(requested);
+            let stage = self.stage.clone();
+            cx.defer(move |cx| stage.update(cx, |stage, cx| stage.set_sidebar(requested, cx)));
+        }
         let slab = shell.slab;
         let pre = cx.entity();
         let paint = cx.entity();
@@ -1014,9 +1026,9 @@ impl Render for EditorView {
         });
         let header = self.header(&shell, window, cx);
         let footer = self.footer(&shell);
-        let area = size(
-            slab.size.width,
-            slab.size.height - px(shell.footer + 1.),
+        let area = Bounds::new(
+            slab.origin,
+            size(slab.size.width, slab.size.height - px(shell.footer + 1.)),
         );
         let command = self.command_lens(area, window, cx);
         let welcome = self.welcome();

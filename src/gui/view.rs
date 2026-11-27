@@ -114,6 +114,13 @@ pub struct EditorView {
     tab_lens: (super::motion::Motion, super::motion::Motion),
     tab_lens_ready: bool,
     command_presence: super::motion::Motion,
+    /// Where the command lens sits (or would sit), in window coordinates.
+    lens_frame: Option<Bounds<Pixels>>,
+    /// Last explorer width and mode color sent to the stage. The stage is a
+    /// cached sibling, so updates are deferred out of this view's draw (a
+    /// notification raised mid-frame would be dropped) and sent only on change.
+    stage_sidebar: Option<Option<f32>>,
+    stage_mode: Option<Hsla>,
     bounds: Option<Bounds<Pixels>>,
     cell: Pixels,
     gutter: f32,
@@ -241,6 +248,9 @@ impl EditorView {
             ),
             tab_lens_ready: false,
             command_presence: super::motion::Motion::new(0., super::motion::Character::Glide),
+            lens_frame: None,
+            stage_sidebar: None,
+            stage_mode: None,
             focus,
             bounds: None,
             cell: px(10.),
@@ -2778,9 +2788,12 @@ impl EditorView {
                 ),
             });
         }
-        // The stage settles its mode light toward the current mode; it ignores
-        // repeated colors, so this costs nothing between mode changes.
-        self.stage.update(cx, |stage, cx| stage.set_mode(color, cx));
+        // The stage settles its mode light toward the current mode.
+        if self.stage_mode != Some(color) {
+            self.stage_mode = Some(color);
+            let stage = self.stage.clone();
+            cx.defer(move |cx| stage.update(cx, |stage, cx| stage.set_mode(color, cx)));
+        }
         // Command input publishes its destination later in this same prepaint.
         if e.mode == Mode::Command {
             return;
@@ -3527,7 +3540,7 @@ impl EditorView {
                 // shrink-wrap, so overestimating never leaves empty glass there.
                 * 1.2
         };
-        let placement = place(
+        let mut placement = place(
             bounds,
             caret,
             (
@@ -3581,6 +3594,26 @@ impl EditorView {
             ),
             detail.is_some() && !self.documentation_only,
         );
+        // Pickers hang from the command lens: the query and its results read as
+        // one instrument at the top of the editor pane. Without a lens (the
+        // palette), they drop from the place the lens would occupy.
+        if presentation == Presentation::Picker
+            && let Some(frame) = self.lens_frame
+        {
+            let top = if self.model.editor.mode == Mode::Command {
+                f32::from(frame.bottom()) + space::SM
+            } else {
+                f32::from(frame.top())
+            };
+            let room = f32::from(viewport.height) - top - space::XXL;
+            placement.menu = Rect {
+                x: f32::from(frame.left()),
+                y: top,
+                width: f32::from(frame.size.width),
+                height: placement.menu.height.min(room.max(120.)),
+            };
+            placement.above = false;
+        }
         let rows = if self.documentation_only {
             vec![
                 div()
@@ -4230,7 +4263,12 @@ impl EditorView {
                     level
                 }
                 None => {
-                    let after = measured[i + 1..].iter().flatten().next().copied().unwrap_or(0);
+                    let after = measured[i + 1..]
+                        .iter()
+                        .flatten()
+                        .next()
+                        .copied()
+                        .unwrap_or(0);
                     before.min(after)
                 }
             };
@@ -4274,8 +4312,11 @@ impl EditorView {
         let x = bounds.right() - width - px(space::SM);
         if lines > cache.rows as f32 {
             window.paint_quad(
-                fill(Bounds::new(point(x, top), size(width, height)), self.theme.hover)
-                    .corner_radii(Corners::all(width / 2.)),
+                fill(
+                    Bounds::new(point(x, top), size(width, height)),
+                    self.theme.hover,
+                )
+                .corner_radii(Corners::all(width / 2.)),
             );
             let span = (cache.rows as f32 / lines).min(1.);
             let thumb = (height * span).max(px(22.));
@@ -4321,13 +4362,13 @@ impl EditorView {
                 tick(line, 1, self.theme.search.opacity(0.8), window);
             }
         }
-        for (_, (_, _, items)) in self
-            .services
-            .diagnostics
-            .iter()
-            .filter(|((_, id), (revision, _, _))| {
-                *id == e.document_id && *revision == e.buffer.revision
-            })
+        for (_, (_, _, items)) in
+            self.services
+                .diagnostics
+                .iter()
+                .filter(|((_, id), (revision, _, _))| {
+                    *id == e.document_id && *revision == e.buffer.revision
+                })
         {
             for d in items.iter().take(1024) {
                 let rank = match d.severity {
@@ -4454,7 +4495,8 @@ impl EntityInputHandler for EditorView {
     ) -> Option<Bounds<Pixels>> {
         if self.model.editor.mode == Mode::Command {
             let line = self.command_line.as_ref()?;
-            let byte = 1 + self
+            // The shaped command text has no prefix: the lens chip shows `:`/`/`.
+            let byte = self
                 .model
                 .editor
                 .command

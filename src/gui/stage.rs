@@ -93,7 +93,13 @@ impl Stage {
     }
     /// Applies changed settings. The world reloads only when its source or the
     /// material that consumes it changed; every other change rebakes lazily.
-    pub fn configure(&mut self, config: &Config, theme: Theme, force: bool, cx: &mut Context<Self>) {
+    pub fn configure(
+        &mut self,
+        config: &Config,
+        theme: Theme,
+        force: bool,
+        cx: &mut Context<Self>,
+    ) {
         let next = &config.background;
         let reload = force
             || self.settings.enabled != next.enabled
@@ -232,7 +238,9 @@ impl Stage {
         material.task = Some(cx.spawn(async move |stage, cx| {
             executor.timer(Duration::from_millis(delay)).await;
             let current = stage
-                .read_with(cx, |stage, _| stage.materials[index].generation == generation)
+                .read_with(cx, |stage, _| {
+                    stage.materials[index].generation == generation
+                })
                 .unwrap_or(false);
             if !current {
                 return;
@@ -309,10 +317,13 @@ impl Render for Stage {
         let fit = self.settings.fit;
         let panes: Vec<Bounds<Pixels>> = shell.panes().collect();
         // Material slots: the explorer bakes into slot 0, the editor into slot 1.
-        let slots: Vec<usize> = if panes.len() == 2 { vec![0, 1] } else { vec![1] };
+        let slots: Vec<usize> = if panes.len() == 2 {
+            vec![0, 1]
+        } else {
+            vec![1]
+        };
         if theme.glass != Glass::Solid
-            && let Some((world_atmosphere, _)) =
-                self.scenery.as_ref().map(|s| (s.atmosphere, ()))
+            && let Some((world_atmosphere, _)) = self.scenery.as_ref().map(|s| (s.atmosphere, ()))
         {
             for (bounds, slot) in panes.iter().zip(&slots) {
                 let params = Bake {
@@ -418,7 +429,8 @@ impl Render for Stage {
                     );
                     match image {
                         Some(image) if theme.glass != Glass::Solid => {
-                            let _ = window.paint_image(pane, corners(radius), image.clone(), 0, false);
+                            let _ =
+                                window.paint_image(pane, corners(radius), image.clone(), 0, false);
                         }
                         _ => window.paint_quad(
                             fill(

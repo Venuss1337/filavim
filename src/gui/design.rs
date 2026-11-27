@@ -114,13 +114,18 @@ impl Shell {
         let height = (vh - header - margin).max(1.);
         let mut left = margin;
         let sidebar = sidebar.map(|width| {
-            let width = width.min((vw - margin * 2. - gap - 280.).max(120.)).max(120.);
+            let width = width
+                .min((vw - margin * 2. - gap - 280.).max(120.))
+                .max(120.);
             let bounds = Bounds::new(point(px(margin), px(header)), size(px(width), px(height)));
             left += width + gap;
             bounds
         });
         Self {
-            top: Bounds::new(point(px(margin), px(margin)), size(px((vw - margin * 2.).max(1.)), px(capsule))),
+            top: Bounds::new(
+                point(px(margin), px(margin)),
+                size(px((vw - margin * 2.).max(1.)), px(capsule)),
+            ),
             sidebar,
             slab: Bounds::new(
                 point(px(left), px(header)),
@@ -133,7 +138,10 @@ impl Shell {
     }
     /// Every glass pane the stage paints, the explorer first.
     pub fn panes(&self) -> impl Iterator<Item = Bounds<Pixels>> + '_ {
-        self.sidebar.iter().copied().chain(std::iter::once(self.slab))
+        self.sidebar
+            .iter()
+            .copied()
+            .chain(std::iter::once(self.slab))
     }
 }
 
@@ -478,8 +486,7 @@ pub fn button(
         .whitespace_nowrap()
         .map(|d| {
             if !enabled {
-                d.border_color(theme.hairline)
-                    .text_color(theme.faint)
+                d.border_color(theme.hairline).text_color(theme.faint)
             } else {
                 d.bg(linear_gradient(
                     180.,
@@ -574,10 +581,6 @@ pub fn row(theme: &Theme, id: impl Into<ElementId>, selected: bool) -> Stateful<
 /// Horizontal hairline separator.
 pub fn divider(theme: &Theme) -> Div {
     div().flex_none().h(px(1.)).w_full().bg(theme.hairline)
-}
-/// Vertical hairline separator that fills its parent's height.
-pub fn rule(theme: &Theme) -> Div {
-    div().flex_none().w(px(1.)).h_full().bg(theme.hairline)
 }
 /// Panel heading: signal glyph, title and optional trailing meta text.
 pub fn heading(

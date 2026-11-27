@@ -36,7 +36,11 @@ impl Render for NativeWindow {
                     .top(px(0.))
                     .left(px(0.))
                     .size_full()
-                    .child(self.stage.clone()),
+                    // Cached: typing re-renders the editor, not the world beneath it.
+                    .child(
+                        AnyView::from(self.stage.clone())
+                            .cached(StyleRefinement::default().size_full()),
+                    ),
             )
             .child(
                 AnyView::from(self.editor.clone()).cached(StyleRefinement::default().size_full()),

@@ -80,14 +80,21 @@ impl Render for ToastView {
         self.schedule(cx);
         let theme = self.theme;
         let scale = self.scale;
-        // Below the title row, aligned to the window's trailing edge.
-        let top = scale.title_bar() + space::MD;
-        let width = (f32::from(window.viewport_size().width) - space::LG * 2.).clamp(0., 360.);
+        // Inside the editor pane's upper trailing corner, below the capsule row.
+        let shell = design::Shell::new(
+            window.viewport_size(),
+            scale,
+            window.is_maximized() || window.is_fullscreen(),
+            None,
+        );
+        let top = f32::from(shell.slab.top()) + space::MD;
+        let right = shell.margin + space::MD;
+        let width = (f32::from(window.viewport_size().width) - right * 2.).clamp(0., 360.);
         let height = (f32::from(window.viewport_size().height) - top - space::LG).max(0.);
         let mut stack = design::typeface(div(), &theme, scale.ui)
             .absolute()
             .top(px(top))
-            .right(px(space::LG))
+            .right(px(right))
             .w(px(width))
             .max_h(px(height))
             .overflow_hidden()
@@ -135,7 +142,18 @@ impl Render for ToastView {
                             .h(px(scale.control()))
                             .flex()
                             .items_center()
-                            .child(design::icon(glyph, scale.ui, color)),
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .size(px(scale.control() - space::SM))
+                                    .rounded(px((scale.control() - space::SM) / 2.))
+                                    .bg(color.opacity(0.14))
+                                    .border_1()
+                                    .border_color(color.opacity(0.36))
+                                    .child(design::icon(glyph, scale.small, color)),
+                            ),
                     )
                     .child(
                         div()
@@ -156,6 +174,7 @@ impl Render for ToastView {
                                             .overflow_hidden()
                                             .text_ellipsis()
                                             .whitespace_nowrap()
+                                            .font_weight(FontWeight::BOLD)
                                             .child(SharedString::new(
                                                 toast.notification.title.clone(),
                                             )),
@@ -205,7 +224,13 @@ impl Render for ToastView {
                                     .h_full()
                                     .w(relative(visual.progress))
                                     .rounded(px(1.))
-                                    .bg(color.opacity(0.7)),
+                                    .bg(color.opacity(0.75))
+                                    .shadow(vec![BoxShadow {
+                                        color: color.opacity(0.5),
+                                        offset: point(px(0.), px(0.)),
+                                        blur_radius: px(6.),
+                                        spread_radius: px(0.),
+                                    }]),
                             ),
                     ),
             );

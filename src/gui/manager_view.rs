@@ -837,23 +837,27 @@ impl EditorView {
         .enumerate()
         .map(|(i, (label, key, filter))| {
             let active = self.manager_ui.filter == filter;
-            div()
+            let height = scale.control() - space::XS - 2.;
+            // Segments sit in a well; the active one is a lens.
+            let segment = if active {
+                design::lens(&theme, height / 2.)
+            } else {
+                div().border_1().border_color(theme.hover.opacity(0.))
+            };
+            segment
                 .id(("lsp-filter", i))
+                .relative()
                 .flex()
                 .items_center()
                 .gap(px(space::XS))
-                .h(px(scale.control() - space::XS - 2.))
-                .px(px(space::MD))
-                .rounded(px(design::radius::CONTROL - 1.))
+                .h(px(height))
+                .px(px(space::LG))
+                .rounded(px(height / 2.))
                 .text_size(px(scale.small))
                 .cursor_pointer()
-                .text_color(if active { theme.text } else { theme.secondary })
-                .map(|d| {
-                    if active {
-                        d.bg(theme.pressed)
-                    } else {
-                        d.hover(|s| s.bg(theme.hover).text_color(theme.text))
-                    }
+                .text_color(if active { theme.text } else { theme.muted })
+                .when(!active, |d| {
+                    d.hover(|s| s.bg(theme.hover).text_color(theme.secondary))
                 })
                 .child(label)
                 .child(
@@ -876,16 +880,17 @@ impl EditorView {
             .gap(px(space::MD))
             .h(px(scale.title_bar()))
             .pl(px(space::XL))
-            .pr(px(space::SM))
+            .pr(px(space::MD))
             .border_b_1()
             .border_color(theme.hairline)
-            .child(design::heading(
-                &theme,
-                scale,
-                icons::SERVER,
-                theme.accent,
-                "Language servers",
-            ))
+            .child(design::mark(theme.accent, scale.ui + 3.))
+            .child(
+                div()
+                    .text_size(px(scale.ui + 2.))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(theme.text)
+                    .child("Language servers"),
+            )
             .child(div().flex_1())
             .child(design::badge(
                 if self.manager_ui.workspace {
@@ -933,12 +938,18 @@ impl EditorView {
             .gap(px(space::SM))
             .w(px((width * 0.3).clamp(160., 300.)))
             .h(px(scale.control()))
-            .px(px(space::SM))
-            .rounded(px(design::radius::CONTROL))
+            .px(px(space::MD))
+            .rounded(px(scale.control() / 2.))
             .border_1()
-            .border_color(theme.accent.opacity(0.5))
-            .bg(theme.hover)
-            .child(design::icon(icons::SEARCH, scale.small, theme.secondary))
+            .border_color(theme.accent.opacity(0.45))
+            .bg(theme.well)
+            .shadow(vec![BoxShadow {
+                color: theme.accent.opacity(0.18),
+                offset: point(px(0.), px(0.)),
+                blur_radius: px(8.),
+                spread_radius: px(0.),
+            }])
+            .child(design::icon(icons::SEARCH, scale.small, theme.accent))
             .child(
                 div()
                     .flex()
@@ -962,14 +973,11 @@ impl EditorView {
             .py(px(space::MD))
             .child(search)
             .child(
-                div()
+                design::well(&theme, scale.control() / 2.)
                     .flex()
                     .items_center()
                     .gap(px(space::XXS))
                     .p(px(space::XXS))
-                    .rounded(px(design::radius::CONTROL))
-                    .border_1()
-                    .border_color(theme.hairline)
                     .children(filters),
             )
             .child(div().flex_1())
@@ -1292,48 +1300,48 @@ impl EditorView {
                     .border_color(theme.warning.opacity(0.35))
                     .child(design::icon(icons::PACKAGE, scale.small, theme.warning)),
             )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.))
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_ellipsis()
-                        .child(message),
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .child(message),
+            )
+            .child(
+                design::button(
+                    &theme,
+                    scale,
+                    "lsp-missing-manage",
+                    "Manage…",
+                    Tone::Primary,
+                    true,
+                    false,
                 )
-                .child(
-                    design::button(
-                        &theme,
-                        scale,
-                        "lsp-missing-manage",
-                        "Manage…",
-                        Tone::Primary,
-                        true,
-                        false,
-                    )
-                    .on_click(cx.listener(|v, _, _, cx| v.open_manager(cx))),
+                .on_click(cx.listener(|v, _, _, cx| v.open_manager(cx))),
+            )
+            .child(
+                design::button(
+                    &theme,
+                    scale,
+                    "lsp-missing-dismiss",
+                    "Dismiss",
+                    Tone::Ghost,
+                    true,
+                    false,
                 )
-                .child(
-                    design::button(
-                        &theme,
-                        scale,
-                        "lsp-missing-dismiss",
-                        "Dismiss",
-                        Tone::Ghost,
-                        true,
-                        false,
-                    )
-                    .on_click(cx.listener(move |v, _, _, cx| {
-                        for id in &ids {
-                            v.services.manager.snapshot.missing.remove(id);
-                        }
-                        v.services.manager.submit(Operation::Configure {
-                            workspace: true,
-                            change: Change::Dismiss(ids.clone()),
-                        });
-                        cx.notify();
-                    })),
-                );
+                .on_click(cx.listener(move |v, _, _, cx| {
+                    for id in &ids {
+                        v.services.manager.snapshot.missing.remove(id);
+                    }
+                    v.services.manager.submit(Operation::Configure {
+                        workspace: true,
+                        change: Change::Dismiss(ids.clone()),
+                    });
+                    cx.notify();
+                })),
+            );
         Some(
             div()
                 .absolute()

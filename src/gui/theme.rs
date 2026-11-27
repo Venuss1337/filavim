@@ -69,9 +69,7 @@ pub struct Theme {
     pub hairline: Hsla,
     pub scrim: Hsla,
     pub shadow: Hsla,
-    // Compatibility roles still read by older surfaces.
-    pub overlay: Hsla,
-    pub popup_border: Hsla,
+    /// Selected-row tint for dense lists that do not draw a full lens.
     pub popup_selection: Hsla,
     // Signals.
     pub error: Hsla,
@@ -83,7 +81,6 @@ pub struct Theme {
     pub selection: Hsla,
     pub active_line: Hsla,
     pub gutter: Hsla,
-    pub cursor: Hsla,
     pub matched: Hsla,
     pub punctuation: Hsla,
     pub search: Hsla,
@@ -230,7 +227,9 @@ fn cyber(p: Cyber, light: bool) -> Source {
         search: p.cyan,
         selection: p.blue,
         punctuation: p.fg,
-        hues: [p.blue, p.green, p.cyan, p.yellow, p.magenta, p.orange, p.purple],
+        hues: [
+            p.blue, p.green, p.cyan, p.yellow, p.magenta, p.orange, p.purple,
+        ],
         syntax: [
             p.green, p.orange, p.blue, p.orange, p.purple, p.pink, p.cyan, p.purple, p.magenta,
             p.cyan,
@@ -246,7 +245,12 @@ fn moon(c: &Config) -> Source {
         night: m(Moon::Base),
         glass_top: m(Moon::Overlay),
         glass_bottom: m(Moon::Base),
-        ink: [m(Moon::Text), m(Moon::Subtle), m(Moon::Muted), m(Moon::HighlightHigh)],
+        ink: [
+            m(Moon::Text),
+            m(Moon::Subtle),
+            m(Moon::Muted),
+            m(Moon::HighlightHigh),
+        ],
         accent: m(Moon::Iris),
         error: m(Moon::Love),
         success: m(Moon::Foam),
@@ -419,8 +423,6 @@ impl Theme {
             hairline: ink.opacity(if light { 0.10 } else { 0.08 }),
             scrim: color(s.night).opacity(if light { 0.35 } else { 0.50 }),
             shadow: black.opacity(if light { 0.16 } else { 0.55 }),
-            overlay: color(s.glass_top).opacity(float),
-            popup_border: ink.opacity(0.14),
             popup_selection: ink.opacity(if light { 0.08 } else { 0.10 }),
             error: color(s.error),
             success: color(s.success),
@@ -430,7 +432,6 @@ impl Theme {
             selection: color(s.selection).opacity(if light { 0.22 } else { 0.28 }),
             active_line: ink.opacity(if light { 0.045 } else { 0.035 }),
             gutter: color(s.ink[3]),
-            cursor: ink,
             matched: color(s.accent),
             punctuation: color(s.punctuation),
             search: color(s.search),

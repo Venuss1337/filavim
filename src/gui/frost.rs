@@ -82,7 +82,13 @@ impl World {
         for pass in 0..2 {
             let (lines, length) = if pass == 0 { (h, w) } else { (w, h) };
             for line in 0..lines {
-                let at = |i: usize| if pass == 0 { line * w + i } else { i * w + line };
+                let at = |i: usize| {
+                    if pass == 0 {
+                        line * w + i
+                    } else {
+                        i * w + line
+                    }
+                };
                 let window = (2 * radius + 1) as f32;
                 let mut sum = [0f32; 3];
                 for i in 0..=2 * radius {
@@ -367,7 +373,11 @@ mod tests {
         grained.base = Rgba([0.5, 0.5, 0.5, 1.]);
         grained.grain = 4.;
         let (_, _, pixels) = bake(None, &grained);
-        assert!(pixels.chunks(4).all(|p| p[0].abs_diff(128) <= 3 && p[3] == 255));
+        assert!(
+            pixels
+                .chunks(4)
+                .all(|p| p[0].abs_diff(128) <= 3 && p[3] == 255)
+        );
         assert!(pixels.chunks(4).any(|p| p[0] != 128));
     }
     #[test]
@@ -384,15 +394,30 @@ mod tests {
     }
     #[test]
     fn fitting_matches_cover_contain_and_stretch() {
-        assert_eq!(fitted(Fit::Cover, (100., 100.), (200, 100)), [-50., 0., 200., 100.]);
-        assert_eq!(fitted(Fit::Contain, (100., 100.), (200, 100)), [0., 25., 100., 50.]);
-        assert_eq!(fitted(Fit::Stretch, (100., 100.), (200, 100)), [0., 0., 100., 100.]);
+        assert_eq!(
+            fitted(Fit::Cover, (100., 100.), (200, 100)),
+            [-50., 0., 200., 100.]
+        );
+        assert_eq!(
+            fitted(Fit::Contain, (100., 100.), (200, 100)),
+            [0., 25., 100., 50.]
+        );
+        assert_eq!(
+            fitted(Fit::Stretch, (100., 100.), (200, 100)),
+            [0., 0., 100., 100.]
+        );
         let glows = [Glow {
             center: (0.5, 0.5),
             radius: 0.2,
             color: Rgba([1., 0., 0., 1.]),
         }];
-        let sky = atmosphere(20, 10, Rgba([0., 0., 0., 1.]), Rgba([0., 0., 0., 1.]), &glows);
+        let sky = atmosphere(
+            20,
+            10,
+            Rgba([0., 0., 0., 1.]),
+            Rgba([0., 0., 0., 1.]),
+            &glows,
+        );
         let at = |x: usize, y: usize| sky[(y * 20 + x) * 4 + 2];
         assert!(at(10, 5) > 200 && at(0, 0) < 20);
     }

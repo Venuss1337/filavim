@@ -118,8 +118,8 @@ impl Motion {
         let steps = (elapsed / 0.004).ceil().max(1.) as usize;
         let dt = elapsed / steps as f64;
         for _ in 0..steps {
-            let force = -omega * omega * (self.value - self.target)
-                - 2. * damping * omega * self.velocity;
+            let force =
+                -omega * omega * (self.value - self.target) - 2. * damping * omega * self.velocity;
             self.velocity += force * dt;
             self.value += self.velocity * dt;
         }

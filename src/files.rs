@@ -5,6 +5,7 @@
 //! replacement; a missing file opens as empty only when its parent exists.
 use anyhow::{Context, Result, bail};
 use ropey::Rope;
+use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File},
     io::{BufReader, Read, Write},
@@ -39,9 +40,13 @@ fn parent(path: &Path) -> &Path {
 /// Existing symlinks are followed, permissions retained, and read-only targets
 /// rejected. This blocking operation does not update Buffer's saved-state identity.
 pub fn save(path: &Path, text: &Rope) -> Result<()> {
-    save_impl(path, text, None)
+    save_impl(path, None, |file| text.write_to(file)).map(|_| ())
 }
-fn save_impl(path: &Path, text: &Rope, expected: Option<&DiskState>) -> Result<()> {
+fn save_impl(
+    path: &Path,
+    expected: Option<&DiskState>,
+    write_snapshot: impl FnOnce(&mut File) -> std::io::Result<()>,
+) -> Result<Option<[u64; 2]>> {
     // Follow an existing symlink rather than replacing the symlink itself.
     let target: PathBuf = if fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
         fs::canonicalize(path).with_context(|| format!("Cannot resolve {}", path.display()))?
@@ -63,13 +68,16 @@ fn save_impl(path: &Path, text: &Rope, expected: Option<&DiskState>) -> Result<(
     };
     let mut temp = tempfile::NamedTempFile::new_in(parent(&target))
         .context("Cannot create save file in destination directory")?;
-    text.write_to(temp.as_file_mut())?;
-    temp.flush()?;
+    write_snapshot(temp.as_file_mut()).context("Cannot write save snapshot")?;
+    temp.flush().context("Cannot flush save snapshot")?;
     let creating = metadata.is_none();
     if let Some(metadata) = metadata {
         temp.as_file().set_permissions(metadata.permissions())?;
     }
-    temp.as_file().sync_all()?;
+    temp.as_file()
+        .sync_all()
+        .context("Cannot sync save snapshot")?;
+    let identity = file_identity(temp.as_file())?;
     // On Windows this denies ordinary write handles during final verification
     // and replacement, but permits deletion so our atomic rename can succeed.
     // A path replacement by another process can still race; this is not CAS.
@@ -98,7 +106,7 @@ fn save_impl(path: &Path, text: &Rope, expected: Option<&DiskState>) -> Result<(
         replace_temp(temp, &target, expected)
             .with_context(|| format!("Cannot replace {}", path.display()))?;
     }
-    Ok(())
+    Ok(identity)
 }
 
 /// Streaming literal search, bounded by pattern size rather than document size.
@@ -162,7 +170,6 @@ pub fn disk_state(path: &Path) -> Result<DiskState> {
     disk_state_cancellable(path, || false)
 }
 pub(crate) fn disk_state_cancellable(path: &Path, cancel: impl Fn() -> bool) -> Result<DiskState> {
-    use sha2::{Digest, Sha256};
     let mut file = match File::open(path) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(DiskState::Missing),
@@ -217,25 +224,36 @@ pub fn open_tracked(path: &Path) -> Result<(Rope, DiskState)> {
     let before = disk_state(path)?;
     let text = open(path)?;
     let after = disk_state(path)?;
-    if before != after {
+    let snapshot_matches = match &after {
+        DiskState::Missing => text.len_bytes() == 0,
+        DiskState::Present { digest, .. } => *digest == text_digest(&text),
+    };
+    if before != after || !snapshot_matches {
         bail!("File changed while opening; retry");
     }
     Ok((text, after))
 }
 pub fn save_checked(path: &Path, text: &Rope, expected: &DiskState) -> Result<DiskState> {
     verify_state(path, expected)?;
-    save_impl(path, text, Some(expected))?;
+    let staged_identity = save_impl(path, Some(expected), |file| text.write_to(file))?;
     let saved = disk_state(path)?;
-    use sha2::{Digest, Sha256};
+    let digest = text_digest(text);
+    if !matches!(
+        &saved,
+        DiskState::Present { digest: actual, identity, .. }
+            if *actual == digest && *identity == staged_identity
+    ) {
+        bail!("Destination changed immediately after saving; editor contents remain unsaved");
+    }
+    Ok(saved)
+}
+
+fn text_digest(text: &Rope) -> [u8; 32] {
     let mut hash = Sha256::new();
     for chunk in text.chunks() {
         hash.update(chunk.as_bytes());
     }
-    let digest: [u8; 32] = hash.finalize().into();
-    if !matches!(&saved, DiskState::Present { digest: actual, .. } if *actual == digest) {
-        bail!("Destination changed immediately after saving; editor contents remain unsaved");
-    }
-    Ok(saved)
+    hash.finalize().into()
 }
 #[derive(Debug)]
 pub struct Conflict {
@@ -373,6 +391,29 @@ pub(crate) fn save_guard(path: &Path) -> Result<Option<File>> {
 #[cfg(not(windows))]
 pub(crate) fn save_guard(_: &Path) -> Result<Option<File>> {
     Ok(None)
+}
+
+#[cfg(test)]
+#[test]
+fn disk_full_during_staging_preserves_the_original_and_cleans_partial_snapshot() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("document.txt");
+    fs::write(&path, "original text").unwrap();
+    let baseline = disk_state(&path).unwrap();
+
+    let error = save_impl(&path, Some(&baseline), |staging_file| {
+        staging_file.write_all(b"partial replacement")?;
+        Err(std::io::ErrorKind::StorageFull.into())
+    })
+    .unwrap_err();
+
+    assert_eq!(
+        error.downcast_ref::<std::io::Error>().unwrap().kind(),
+        std::io::ErrorKind::StorageFull
+    );
+    assert_eq!(disk_state(&path).unwrap(), baseline);
+    assert_eq!(fs::read_to_string(&path).unwrap(), "original text");
+    assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
 }
 
 #[cfg(all(test, windows))]

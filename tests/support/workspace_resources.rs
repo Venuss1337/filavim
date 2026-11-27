@@ -1189,7 +1189,13 @@ fn deleting_the_last_file_can_execute_a_command_and_acknowledge_its_nested_edit(
     until(|| {
         s.poll(&mut d);
         s.update(&d);
+        // Retiring the runtime queues shutdown; the fixture observes it asynchronously.
         s.runtime("workspace-fixture").is_empty()
+            && std::fs::read_to_string(&log).is_ok_and(|wire| {
+                wire.lines()
+                    .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                    .any(|message| message["method"] == "shutdown")
+            })
     });
     let wire: Vec<Value> = std::fs::read_to_string(&log)
         .unwrap()

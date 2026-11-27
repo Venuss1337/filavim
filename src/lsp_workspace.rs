@@ -525,8 +525,8 @@ pub(crate) fn plan_cancellable(
         for (index, change) in changes.iter().enumerate() {
             ensure!(!cancel.load(Ordering::Relaxed), "Workspace edit cancelled");
             let step = (|| -> Result<Step> {
-                annotation(change, &value["changeAnnotations"], &mut confirmations)?;
                 let reason_start=confirmations.len();
+                annotation(change, &value["changeAnnotations"], &mut confirmations)?;
                 let mut expected = Vec::new();
                 let operation;
                 let summary;

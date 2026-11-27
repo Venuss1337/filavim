@@ -1,5 +1,7 @@
 # Native Language Server Manager
 
+> Historical manager checkpoint. For current controls, catalog, and protocol behavior, see [Language intelligence and managed servers](docs/LANGUAGE_INTELLIGENCE.md).
+
 Open with `Esc`, `:LspManager`, `Enter` (also listed in `:Commands`).
 It is an in-window GPUI overlay using the existing Moon theme, font and popup layer.
 
@@ -169,10 +171,3 @@ roots are tested, but there is no shared multi-root LSP session or Cargo workspa
 membership resolver: opening separate crate/package roots can create separate
 instances. More advanced monorepo consolidation and configurable root rules remain
 future work. Missing runtime executables are reported; runtime installation is manual.
-# Current milestone implementation
-
-See [docs/LANGUAGE_INTELLIGENCE.md](docs/LANGUAGE_INTELLIGENCE.md) for the current
-nine-entry catalog, required five-server recipes, managed Node runtime, security
-guarantees and remaining Milestone 4 gaps. The earlier implementation notes below
-describe historical versions/defaults and are not the current catalog contract.
-

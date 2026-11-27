@@ -1,5 +1,7 @@
 # Native IDE guide
 
+> Historical terminal-edition reference. See the [FilaVim README](README.md) for the current native application.
+
 Stage 3 adds a native Rust JSON-RPC/LSP client, background Git jobs, real PTY
 sessions, snippets, and settings/setup panels. No server, package manager, font,
 or scripting runtime is bundled. Your existing cursor configuration is retained;

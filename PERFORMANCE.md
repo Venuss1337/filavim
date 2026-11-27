@@ -1,5 +1,7 @@
 # Responsiveness work
 
+> Historical terminal-edition reference. See the [FilaVim README](README.md) for the current native application.
+
 The original pass is retained below as historical evidence. See
 [Second runtime pass](#second-runtime-pass) for the current implementation,
 individual-sample benchmarks, tradeoffs, and remaining limitations.

@@ -1,5 +1,7 @@
 # Font setup
 
+> Historical terminal-edition reference. See the [FilaVim README](README.md) for the current native application.
+
 `:SetupFont` opens an inspect-only setup panel. Up/Down selects an action,
 PageUp/PageDown scrolls the description, Enter requests confirmation, and Esc
 cancels. Type `apply` to install/configure, or `remove` for removal. Filesystem,

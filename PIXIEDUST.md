@@ -1,5 +1,7 @@
 # Pixiedust cursor effects
 
+> Historical terminal-edition reference. See the [FilaVim README](README.md) for the current native application.
+
 Pixiedust uses small translucent sprites beneath text while the native cursor
 marks the immediate logical position. Effects run only in Normal-mode document
 navigation. Modes, overlays, terminal focus, view changes, edits and scrolling
